@@ -2,6 +2,9 @@ const fs = require('fs');
 const path = require('path');
 
 const store = require('./store');
+const runsStore = require('./runsStore');
+const eventLog = require('./eventLog');
+const { estimateCostUsd } = require('./pricing');
 const runAnthropic = require('./workers/anthropic');
 const runOpenAI = require('./workers/openai');
 const runCustom = require('./workers/custom');
@@ -9,7 +12,7 @@ const runCustom = require('./workers/custom');
 const LOGS_DIR = path.join(__dirname, '..', 'data', 'logs');
 const MAX_BUFFER_LINES = 2000;
 
-// id -> { status, startedAt, abortController, child, buffer: [] }
+// id -> { status, startedAt, abortController, child, buffer: [], runId }
 const runtime = new Map();
 
 let broadcast = () => {};
@@ -21,7 +24,14 @@ function init(broadcastFn) {
 
 function getRuntime(id) {
   if (!runtime.has(id)) {
-    runtime.set(id, { status: 'idle', startedAt: null, abortController: null, child: null, buffer: [] });
+    runtime.set(id, {
+      status: 'idle',
+      startedAt: null,
+      abortController: null,
+      child: null,
+      buffer: [],
+      runId: null,
+    });
   }
   return runtime.get(id);
 }
@@ -76,25 +86,73 @@ async function start(id) {
 
   rt.startedAt = Date.now();
   rt.abortController = new AbortController();
+  const run = runsStore.startRun({ agentId: id, provider: agent.provider, model: agent.model });
+  rt.runId = run.id;
+
   setStatus(id, 'running');
   appendLog(id, `--- starting "${agent.name}" (${agent.provider}) ---\n`);
+  eventLog.record({
+    actor: 'operator',
+    action: 'run.started',
+    entityType: 'agent',
+    entityId: id,
+    details: { agentName: agent.name, provider: agent.provider, model: agent.model, runId: run.id },
+  });
 
   const onLog = (chunk) => appendLog(id, chunk);
 
   const ABORT_ERROR_NAMES = new Set(['AbortError', 'APIUserAbortError']);
-  const finish = (err) => {
+  const finish = (err, usage) => {
     rt.abortController = null;
     rt.child = null;
-    if (err && !ABORT_ERROR_NAMES.has(err.name)) {
-      appendLog(id, `\n[error] ${err.message}\n`);
-      setStatus(id, 'error');
-    } else if (err && ABORT_ERROR_NAMES.has(err.name)) {
+
+    let status; // completed | error | cancelled
+    if (err && ABORT_ERROR_NAMES.has(err.name)) {
+      status = 'cancelled';
       appendLog(id, `\n--- stopped ---\n`);
       setStatus(id, 'idle');
+    } else if (err) {
+      status = 'error';
+      appendLog(id, `\n[error] ${err.message}\n`);
+      setStatus(id, 'error');
     } else {
+      status = 'completed';
       appendLog(id, `\n--- finished ---\n`);
       setStatus(id, 'idle');
     }
+
+    const inputTokens = usage?.inputTokens ?? null;
+    const outputTokens = usage?.outputTokens ?? null;
+    const cachedTokens = usage?.cachedTokens ?? null;
+    const costUsd = estimateCostUsd(agent.provider, agent.model, inputTokens, outputTokens);
+
+    runsStore.finishRun(rt.runId, {
+      status,
+      inputTokens,
+      outputTokens,
+      cachedTokens,
+      costUsd,
+      error: err && status === 'error' ? err.message : null,
+    });
+
+    eventLog.record({
+      actor: 'operator',
+      action: status === 'completed' ? 'run.completed' : status === 'cancelled' ? 'run.cancelled' : 'run.failed',
+      entityType: 'agent',
+      entityId: id,
+      details: {
+        agentName: agent.name,
+        runId: rt.runId,
+        inputTokens,
+        outputTokens,
+        costUsd,
+        error: err && status === 'error' ? err.message : null,
+      },
+      flagged: status === 'error',
+      flagReason: status === 'error' ? 'run failed' : null,
+    });
+
+    rt.runId = null;
   };
 
   let runPromise;
@@ -113,7 +171,7 @@ async function start(id) {
     return;
   }
 
-  runPromise.then(() => finish(null)).catch((err) => finish(err));
+  runPromise.then((usage) => finish(null, usage)).catch((err) => finish(err));
 }
 
 function stop(id) {
@@ -121,6 +179,13 @@ function stop(id) {
   if (rt.status !== 'running') throw new Error('agent is not running');
   if (rt.child) rt.child.kill('SIGTERM');
   if (rt.abortController) rt.abortController.abort();
+  eventLog.record({
+    actor: 'operator',
+    action: 'run.stop_requested',
+    entityType: 'agent',
+    entityId: id,
+    details: { runId: rt.runId },
+  });
 }
 
 function discard(id) {
@@ -131,4 +196,40 @@ function discard(id) {
   if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 }
 
-module.exports = { init, start, stop, discard, getStatus, getAllStatuses, getLogs };
+function getSummary() {
+  const agents = store.list();
+  const statuses = getAllStatuses();
+  const active = agents.filter((a) => statuses[a.id]?.status === 'running').length;
+  const needsAttention = agents.filter((a) => statuses[a.id]?.status === 'error').length;
+  const totals = runsStore.summarize();
+  return {
+    totalAgents: agents.length,
+    active,
+    needsAttention,
+    ...totals,
+  };
+}
+
+function getActivity({ limit = 100, agentId = null } = {}) {
+  return eventLog.list({ limit, agentId });
+}
+
+function getAgentRuns(id, limit = 50) {
+  return {
+    runs: runsStore.listForAgent(id, limit),
+    summary: runsStore.summarizeForAgent(id),
+  };
+}
+
+module.exports = {
+  init,
+  start,
+  stop,
+  discard,
+  getStatus,
+  getAllStatuses,
+  getLogs,
+  getSummary,
+  getActivity,
+  getAgentRuns,
+};

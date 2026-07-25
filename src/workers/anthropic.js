@@ -21,6 +21,12 @@ async function runAnthropic({ agent, onLog, signal }) {
 
   const final = await stream.finalMessage();
   onLog(`\n\n[done] model=${model} stop_reason=${final.stop_reason} usage=${JSON.stringify(final.usage)}`);
+
+  return {
+    inputTokens: final.usage?.input_tokens ?? null,
+    outputTokens: final.usage?.output_tokens ?? null,
+    cachedTokens: final.usage?.cache_read_input_tokens ?? null,
+  };
 }
 
 module.exports = runAnthropic;

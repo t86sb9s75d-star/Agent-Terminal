@@ -1,5 +1,8 @@
 node_modules/
 data/agents.json
+data/.agents.hash
+data/runs.json
+data/events.jsonl
 data/logs/
 .env
 *.log

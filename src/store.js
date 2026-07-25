@@ -4,10 +4,15 @@ const crypto = require('crypto');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const AGENTS_FILE = path.join(DATA_DIR, 'agents.json');
+const HASH_FILE = path.join(DATA_DIR, '.agents.hash');
 
 function ensureFile() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(AGENTS_FILE)) fs.writeFileSync(AGENTS_FILE, '[]', 'utf8');
+}
+
+function hashOf(raw) {
+  return crypto.createHash('sha256').update(raw).digest('hex');
 }
 
 function readAll() {
@@ -22,7 +27,29 @@ function readAll() {
 
 function writeAll(agents) {
   ensureFile();
-  fs.writeFileSync(AGENTS_FILE, JSON.stringify(agents, null, 2), 'utf8');
+  const raw = JSON.stringify(agents, null, 2);
+  fs.writeFileSync(AGENTS_FILE, raw, 'utf8');
+  fs.writeFileSync(HASH_FILE, hashOf(raw), 'utf8');
+}
+
+// Detects whether agents.json was edited by something other than this module
+// (e.g. hand-edited on disk) since the last write this process made.
+// Returns { checked, tampered } — checked is false the very first time
+// (no prior known-good hash to compare against).
+function checkIntegrity() {
+  ensureFile();
+  const raw = fs.readFileSync(AGENTS_FILE, 'utf8');
+  const actual = hashOf(raw);
+  if (!fs.existsSync(HASH_FILE)) {
+    fs.writeFileSync(HASH_FILE, actual, 'utf8');
+    return { checked: false, tampered: false };
+  }
+  const expected = fs.readFileSync(HASH_FILE, 'utf8').trim();
+  if (expected !== actual) {
+    fs.writeFileSync(HASH_FILE, actual, 'utf8');
+    return { checked: true, tampered: true };
+  }
+  return { checked: true, tampered: false };
 }
 
 const VALID_PROVIDERS = ['anthropic', 'openai', 'custom'];
@@ -51,6 +78,7 @@ function create(data) {
   const agent = {
     id: crypto.randomUUID(),
     name: data.name.trim(),
+    role: data.role ? data.role.trim() : '',
     provider: data.provider,
     model: data.model || null,
     systemPrompt: data.systemPrompt || '',
@@ -73,6 +101,7 @@ function update(id, data) {
   const updated = {
     ...existing,
     name: data.name !== undefined ? data.name.trim() : existing.name,
+    role: data.role !== undefined ? data.role.trim() : existing.role,
     provider: data.provider !== undefined ? data.provider : existing.provider,
     model: data.model !== undefined ? data.model : existing.model,
     systemPrompt: data.systemPrompt !== undefined ? data.systemPrompt : existing.systemPrompt,
@@ -96,4 +125,4 @@ function remove(id) {
   writeAll(next);
 }
 
-module.exports = { list, get, create, update, remove, VALID_PROVIDERS };
+module.exports = { list, get, create, update, remove, checkIntegrity, VALID_PROVIDERS };

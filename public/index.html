@@ -3,44 +3,33 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Agent Terminal</title>
+  <title>Rucker Park</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div class="app">
+  <div class="shell">
     <header class="topbar">
-      <div class="brand">
-        <span class="brand-dot"></span>
-        <span>Agent&nbsp;Terminal</span>
-      </div>
-      <div class="provider-badges" id="provider-badges"></div>
-      <button class="btn btn-primary" id="new-agent-btn">+ New Agent</button>
+      <div class="wordmark">RUCKER PARK</div>
+      <div class="topbar-divider"></div>
+      <div class="system-line" id="system-line">Loading system state…</div>
+      <div class="topbar-spacer"></div>
+      <div class="topbar-clock" id="topbar-clock"></div>
     </header>
 
-    <div class="body">
-      <aside class="sidebar" id="agent-list"></aside>
+    <div class="shell-body">
+      <nav class="rail">
+        <button class="rail-item active" data-view="command"><span class="label">Command</span></button>
+        <button class="rail-item" data-view="agents"><span class="label">Agents</span></button>
+        <button class="rail-item" data-view="activity"><span class="label">Activity</span></button>
+        <div class="rail-spacer"></div>
+        <button class="rail-item rail-cta" id="new-agent-btn"><span class="label">+ New Agent</span></button>
+      </nav>
 
-      <main class="main">
-        <div id="empty-state" class="empty-state">
-          <p>Select an agent, or create a new one to get started.</p>
-        </div>
-
-        <div id="agent-panel" class="agent-panel hidden">
-          <div class="agent-panel-header">
-            <div>
-              <h2 id="agent-name"></h2>
-              <span class="tag" id="agent-provider"></span>
-              <span class="status-badge" id="agent-status"></span>
-            </div>
-            <div class="actions">
-              <button class="btn" id="start-btn">Start</button>
-              <button class="btn" id="stop-btn">Stop</button>
-              <button class="btn" id="edit-btn">Edit</button>
-              <button class="btn btn-danger" id="delete-btn">Delete</button>
-            </div>
-          </div>
-          <pre class="terminal" id="terminal"></pre>
-        </div>
+      <main class="content">
+        <section id="view-command" class="view"></section>
+        <section id="view-agents" class="view hidden"></section>
+        <section id="view-activity" class="view hidden"></section>
+        <section id="view-agent-detail" class="view hidden"></section>
       </main>
     </div>
   </div>
@@ -50,7 +39,11 @@
       <h3 id="modal-title">New Agent</h3>
 
       <label>Name
-        <input type="text" name="name" required placeholder="e.g. research-bot" />
+        <input type="text" name="name" required placeholder="e.g. Architect" />
+      </label>
+
+      <label>Role
+        <input type="text" name="role" placeholder="e.g. System design and planning" />
       </label>
 
       <label>Provider

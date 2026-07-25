@@ -1,15 +1,22 @@
-# Agent Terminal
+# Rucker Park
 
-A localized, harnessed and secured hub to store, operate, and improve your AI agents cohesively and efficiently.
+The agent operations foundation for Naismith — a self-hosted command environment for registering, running, and auditing AI agents across providers.
 
-Agent Terminal is a self-hosted orchestration dashboard for running short-lived AI agents against multiple providers (Anthropic, OpenAI, or your own custom scripts) from one place — define an agent once, then start it, watch its output stream live, and stop it, all from the browser.
+Naismith is the intelligence system; Rucker Park is where it's operated. This first version is the operational foundation: register an agent, start it, watch it run, stop it, and keep an honest record of what happened — cost, duration, outcome, and a permanent audit trail. Missions, approvals, and the full system map come later, once this layer is solid.
 
 ## Features
 
-- **Agent registry** — define agents (name, provider, model, prompt/task or shell command) and persist them to disk.
-- **Start / stop / status** — run agents on demand and track their lifecycle (idle, running, error).
-- **Live log streaming** — agent output streams to the browser over WebSocket as it's produced, and is also persisted per-agent so you can revisit it later.
+- **Command view** — a real-time summary of the whole system: active agents, what completed today, what needs attention, cost today, and execution success — no invented metrics.
+- **Agent registry** — define agents (name, role, provider, model, prompt/task or shell command) and persist them to disk.
+- **Start / stop / status** — run agents on demand and track their lifecycle (idle, running, completed, failed, cancelled).
+- **Live log streaming** — agent output streams to the browser over WebSocket as it's produced, and is persisted per-agent so you can revisit it later.
 - **Multi-provider** — built-in runners for Anthropic and OpenAI (streaming chat completions), plus a `custom` provider that runs any local shell command as an agent.
+- **Real cost tracking** — token usage is read from each provider's response and priced against a documented table (`src/pricing.js`). Unknown models show `—`, never a guessed number.
+- **Run history** — every run is a discrete, timestamped record (duration, tokens, cost, outcome), queryable per agent.
+- **Audit trail** — every state-changing action (agent created/edited/deleted, every run started/stopped/completed/failed) is logged append-only with actor, timestamp, and details, and streamed live to the Activity view.
+- **Registry integrity check** — `agents.json` is hash-verified on every server start; an edit made outside the API (bypassing the system) is flagged in the audit trail instead of silently accepted.
+
+What's deliberately **not** measured yet: task/answer quality, decision quality, or any single "reliability" score. Cards show "Execution success" (did the run finish without error) and "Task quality: Not measured" — those are different things, and only the first one is real right now.
 
 ## Getting started
 
@@ -31,16 +38,23 @@ The dashboard is served at `http://127.0.0.1:4173` by default (override with `HO
 
 ## Security note
 
-Agent Terminal has no built-in authentication and the `custom` provider executes arbitrary shell commands you configure. It binds to `127.0.0.1` by default and is intended to run locally on a trusted machine — do not expose it directly to the internet without adding your own auth/reverse-proxy layer.
+Rucker Park has no built-in authentication and the `custom` provider executes arbitrary shell commands you configure. It binds to `127.0.0.1` by default and is intended to run locally on a trusted machine — do not expose it directly to the internet without adding your own auth/reverse-proxy layer. The audit trail records every action taken through the API and flags edits made directly to the registry file on disk, but it cannot see or log activity that never goes through this system.
 
 ## Project layout
 
 ```
 src/
   server.js        Express API + WebSocket server
-  agentManager.js   Runtime lifecycle: start/stop, log buffering + persistence
-  store.js          JSON-file backed agent registry
+  agentManager.js   Runtime lifecycle: start/stop, run records, audit events
+  store.js          JSON-file backed agent registry + integrity check
+  runsStore.js       Per-run history (tokens, cost, duration, outcome)
+  eventLog.js        Append-only audit trail
+  pricing.js          $/token table used to estimate run cost
   workers/           One runner per provider (anthropic, openai, custom)
-public/              Terminal-styled dashboard (vanilla JS, no build step)
-data/                Runtime state: agents.json + per-agent log files (gitignored)
+public/              Rucker Park dashboard (vanilla JS, no build step)
+data/                Runtime state: agents.json, runs.json, events.jsonl, logs/ (gitignored)
 ```
+
+## Roadmap (not built yet)
+
+Phase 2+ per the current design direction: missions (grouping agents around an objective, with stages/dependencies/risks), an approvals center for agent actions that need sign-off, decision rooms for structured multi-agent recommendations, and eventually a system map — built only once the underlying objects and events above are real, so every node and animation reflects actual backend state rather than decoration.
