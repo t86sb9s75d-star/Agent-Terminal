@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Terminal</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span>Agent&nbsp;Terminal</span>
+      </div>
+      <div class="provider-badges" id="provider-badges"></div>
+      <button class="btn btn-primary" id="new-agent-btn">+ New Agent</button>
+    </header>
+
+    <div class="body">
+      <aside class="sidebar" id="agent-list"></aside>
+
+      <main class="main">
+        <div id="empty-state" class="empty-state">
+          <p>Select an agent, or create a new one to get started.</p>
+        </div>
+
+        <div id="agent-panel" class="agent-panel hidden">
+          <div class="agent-panel-header">
+            <div>
+              <h2 id="agent-name"></h2>
+              <span class="tag" id="agent-provider"></span>
+              <span class="status-badge" id="agent-status"></span>
+            </div>
+            <div class="actions">
+              <button class="btn" id="start-btn">Start</button>
+              <button class="btn" id="stop-btn">Stop</button>
+              <button class="btn" id="edit-btn">Edit</button>
+              <button class="btn btn-danger" id="delete-btn">Delete</button>
+            </div>
+          </div>
+          <pre class="terminal" id="terminal"></pre>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <div class="modal-overlay hidden" id="modal-overlay">
+    <form class="modal" id="agent-form">
+      <h3 id="modal-title">New Agent</h3>
+
+      <label>Name
+        <input type="text" name="name" required placeholder="e.g. research-bot" />
+      </label>
+
+      <label>Provider
+        <select name="provider" id="provider-select" required>
+          <option value="anthropic">Anthropic</option>
+          <option value="openai">OpenAI</option>
+          <option value="custom">Custom command</option>
+        </select>
+      </label>
+
+      <label id="model-field">Model
+        <input type="text" name="model" placeholder="e.g. claude-sonnet-5" />
+      </label>
+
+      <label id="system-field">System prompt
+        <textarea name="systemPrompt" rows="2" placeholder="Optional"></textarea>
+      </label>
+
+      <label id="task-field">Task / prompt
+        <textarea name="task" rows="4" placeholder="What should this agent do?"></textarea>
+      </label>
+
+      <label id="command-field">Shell command
+        <textarea name="command" rows="2" placeholder="e.g. python3 my_agent.py"></textarea>
+      </label>
+
+      <label id="tokens-field">Max tokens
+        <input type="number" name="maxTokens" value="1024" min="1" />
+      </label>
+
+      <div class="modal-actions">
+        <button type="button" class="btn" id="modal-cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+      <p class="modal-error" id="modal-error"></p>
+    </form>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
