@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rucker Park</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="wordmark">RUCKER PARK</div>
+      <div class="topbar-divider"></div>
+      <div class="system-line" id="system-line">Loading system state…</div>
+      <div class="topbar-spacer"></div>
+      <div class="topbar-clock" id="topbar-clock"></div>
+    </header>
+
+    <div class="shell-body">
+      <nav class="rail">
+        <button class="rail-item active" data-view="command"><span class="label">Command</span></button>
+        <button class="rail-item" data-view="workstreams"><span class="label">Workstreams</span></button>
+        <button class="rail-item" data-view="agents"><span class="label">Agents</span></button>
+        <button class="rail-item" data-view="activity"><span class="label">Activity</span></button>
+        <div class="rail-spacer"></div>
+        <button class="rail-item rail-cta" id="new-agent-btn"><span class="label">+ New Agent</span></button>
+      </nav>
+
+      <main class="content">
+        <section id="view-command" class="view"></section>
+        <section id="view-workstreams" class="view hidden"></section>
+        <section id="view-agents" class="view hidden"></section>
+        <section id="view-activity" class="view hidden"></section>
+      </main>
+    </div>
+  </div>
+
+  <div class="modal-overlay hidden" id="modal-overlay">
+    <form class="modal" id="agent-form">
+      <h3 id="modal-title">New Agent</h3>
+
+      <label>Name
+        <input type="text" name="name" required placeholder="e.g. Architect" />
+      </label>
+
+      <label>Role
+        <input type="text" name="role" placeholder="e.g. System design and planning" />
+      </label>
+
+      <label>Workstream
+        <select name="workstreamId" id="workstream-select">
+          <option value="">Unassigned</option>
+        </select>
+      </label>
+
+      <label>Provider
+        <div class="segmented" id="provider-segmented" role="tablist">
+          <button type="button" data-provider="anthropic" class="active">Anthropic</button>
+          <button type="button" data-provider="openai">OpenAI</button>
+          <button type="button" data-provider="custom">Custom</button>
+        </div>
+        <input type="hidden" name="provider" id="provider-input" value="anthropic" />
+      </label>
+
+      <div id="model-field" class="field-transition"><label>Model
+        <input type="text" name="model" placeholder="e.g. claude-sonnet-5" />
+      </label></div>
+
+      <div id="system-field" class="field-transition"><label>System prompt
+        <textarea name="systemPrompt" rows="2" placeholder="Optional"></textarea>
+      </label></div>
+
+      <div id="task-field" class="field-transition"><label>Task / prompt
+        <textarea name="task" rows="4" placeholder="What should this agent do?"></textarea>
+      </label></div>
+
+      <div id="command-field" class="field-transition field-hidden"><label>Shell command
+        <textarea name="command" rows="2" placeholder="e.g. python3 my_agent.py"></textarea>
+      </label></div>
+
+      <div id="tokens-field" class="field-transition"><label>Max tokens
+        <input type="number" name="maxTokens" value="1024" min="1" />
+      </label></div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn" id="modal-cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+      <p class="modal-error" id="modal-error"></p>
+    </form>
+  </div>
+
+  <div class="modal-overlay hidden" id="workstream-modal-overlay">
+    <form class="modal" id="workstream-form">
+      <h3 id="workstream-modal-title">New Workstream</h3>
+
+      <label>Name
+        <input type="text" name="name" required placeholder="e.g. Authentication" />
+      </label>
+
+      <label>Description
+        <textarea name="description" rows="2" placeholder="What objective does this cover?"></textarea>
+      </label>
+
+      <label>Owner
+        <input type="text" name="owner" placeholder="Optional" />
+      </label>
+
+      <label>Status
+        <div class="segmented" id="status-segmented" role="tablist">
+          <button type="button" data-status="">Auto</button>
+          <button type="button" data-status="Planning" class="active">Planning</button>
+          <button type="button" data-status="Active">Active</button>
+          <button type="button" data-status="Blocked">Blocked</button>
+          <button type="button" data-status="Review">Review</button>
+          <button type="button" data-status="Completed">Completed</button>
+        </div>
+        <input type="hidden" name="statusOverride" id="status-override-input" value="" />
+      </label>
+
+      <div class="modal-actions">
+        <button type="button" class="btn" id="workstream-modal-cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+      <p class="modal-error" id="workstream-modal-error"></p>
+    </form>
+  </div>
+
+  <div class="modal-overlay hidden" id="confirm-overlay">
+    <div class="modal confirm-dialog">
+      <h3 id="confirm-title">Are you sure?</h3>
+      <p id="confirm-body"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="confirm-cancel">Cancel</button>
+        <button type="button" class="btn btn-danger" id="confirm-ok">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
