@@ -7,13 +7,19 @@
     statuses: {},
     summary: null,
     activity: [],
+    workstreams: [],
     view: 'command',
     selectedAgentId: null,
+    selectedWorkstreamId: null,
     editingId: null,
+    editingWorkstreamId: null,
     deleteTargetId: null,
     activityFilter: 'all',
+    activityGrouped: false,
+    agentsWorkstreamFilter: '',
     expandedActivity: new Set(),
     agentsShowingDetail: false, // mobile: list vs detail
+    workstreamsShowingDetail: false,
   };
 
   const el = {
@@ -22,6 +28,7 @@
     railItems: Array.from(document.querySelectorAll('.rail-item[data-view]')),
     newAgentBtn: document.getElementById('new-agent-btn'),
     viewCommand: document.getElementById('view-command'),
+    viewWorkstreams: document.getElementById('view-workstreams'),
     viewAgents: document.getElementById('view-agents'),
     viewActivity: document.getElementById('view-activity'),
     modalOverlay: document.getElementById('modal-overlay'),
@@ -31,6 +38,7 @@
     form: document.getElementById('agent-form'),
     providerSegmented: document.getElementById('provider-segmented'),
     providerInput: document.getElementById('provider-input'),
+    workstreamSelect: document.getElementById('workstream-select'),
     modelField: document.getElementById('model-field'),
     systemField: document.getElementById('system-field'),
     taskField: document.getElementById('task-field'),
@@ -41,6 +49,13 @@
     confirmBody: document.getElementById('confirm-body'),
     confirmCancel: document.getElementById('confirm-cancel'),
     confirmOk: document.getElementById('confirm-ok'),
+    wsModalOverlay: document.getElementById('workstream-modal-overlay'),
+    wsModalTitle: document.getElementById('workstream-modal-title'),
+    wsModalCancel: document.getElementById('workstream-modal-cancel'),
+    wsModalError: document.getElementById('workstream-modal-error'),
+    wsForm: document.getElementById('workstream-form'),
+    statusSegmented: document.getElementById('status-segmented'),
+    statusOverrideInput: document.getElementById('status-override-input'),
   };
 
   // ---------------- Formatting ----------------
@@ -118,6 +133,16 @@
     return { idle: 'Idle', running: 'Running', completed: 'Completed', error: 'Failed', cancelled: 'Stopped' }[status] || status;
   }
 
+  // Workstream statuses are already human-readable (Planning/Active/Blocked/
+  // Review/Completed/Archived) — this just maps to the lowercase CSS class.
+  function workstreamStatusClass(status) {
+    return String(status || 'planning').toLowerCase();
+  }
+
+  function WorkstreamStatusIndicator(status) {
+    return `<span class="status status-${workstreamStatusClass(status)}">${escapeHtml(status)}</span>`;
+  }
+
   // ---------------- API ----------------
 
   async function api(path, options) {
@@ -136,24 +161,35 @@
   function statusOf(id) { return state.statuses[id]?.status || 'idle'; }
 
   async function loadAll() {
-    const [summary, agents, activity] = await Promise.all([
+    const [summary, agents, activity, workstreams] = await Promise.all([
       api('/api/summary'),
       api('/api/agents'),
       api('/api/activity?limit=80'),
+      api('/api/workstreams'),
     ]);
     state.summary = summary;
     state.agents = agents;
     state.activity = activity;
+    state.workstreams = workstreams;
     for (const a of agents) state.statuses[a.id] = { status: a.status || 'idle' };
     if (!state.selectedAgentId && agents.length) state.selectedAgentId = agents[0].id;
+    if (!state.selectedWorkstreamId && workstreams.length) state.selectedWorkstreamId = workstreams[0].id;
+    populateWorkstreamSelect();
   }
 
   async function refreshData() {
-    const [summary, agents] = await Promise.all([api('/api/summary'), api('/api/agents')]);
+    const [summary, agents, workstreams] = await Promise.all([
+      api('/api/summary'),
+      api('/api/agents'),
+      api('/api/workstreams'),
+    ]);
     state.summary = summary;
     state.agents = agents;
+    state.workstreams = workstreams;
     for (const a of agents) state.statuses[a.id] = { status: a.status || 'idle' };
     if (!state.selectedAgentId && agents.length) state.selectedAgentId = agents[0].id;
+    if (!state.selectedWorkstreamId && workstreams.length) state.selectedWorkstreamId = workstreams[0].id;
+    populateWorkstreamSelect();
     render();
   }
 
@@ -163,6 +199,7 @@
     state.view = name;
     el.railItems.forEach((btn) => btn.classList.toggle('active', btn.dataset.view === name));
     el.viewCommand.classList.toggle('hidden', name !== 'command');
+    el.viewWorkstreams.classList.toggle('hidden', name !== 'workstreams');
     el.viewAgents.classList.toggle('hidden', name !== 'agents');
     el.viewActivity.classList.toggle('hidden', name !== 'activity');
     render();
@@ -221,6 +258,18 @@
     return 'runs';
   }
 
+  // Groups the same real events used elsewhere (humanizeEvent) into a short,
+  // factual per-workstream line — a summary of what actually happened, not
+  // an interpretation of intent, blockers, or quality.
+  function synthesizeWorkstreamLine(ws) {
+    if (ws.agentCount === 0) return 'No agents assigned yet.';
+    const relevant = state.activity
+      .filter((e) => e.details?.workstreamId === ws.id && ['run.completed', 'run.failed', 'run.cancelled'].includes(e.action))
+      .slice(0, 2);
+    if (relevant.length === 0) return 'No runs yet.';
+    return relevant.map((e) => humanizeEvent(e)).join('. ') + '.';
+  }
+
   // ---------------- Command ----------------
 
   function renderCommand() {
@@ -259,6 +308,19 @@
                 <div class="meta">${escapeHtml(a.provider)}${a.model ? ` · ${escapeHtml(a.model)}` : ''}</div>
               </div>
             </li>`).join('')}</ul>`}
+
+      ${state.workstreams.filter((w) => !w.archived).length > 0 ? `
+        <p class="section-title" style="margin-top:32px;">Workstreams</p>
+        <ul class="attention-list">
+          ${state.workstreams.filter((w) => !w.archived).map((ws) => `
+            <li class="attention-item" data-workstream-id="${ws.id}" style="cursor:pointer;">
+              ${WorkstreamStatusIndicator(ws.status)}
+              <div class="body">
+                <div class="title">${escapeHtml(ws.name)} — ${escapeHtml(synthesizeWorkstreamLine(ws))}</div>
+                <div class="meta">${ws.agentCount} agent${ws.agentCount === 1 ? '' : 's'} · ${ws.runCount} run${ws.runCount === 1 ? '' : 's'}${ws.cost.pricingStatus !== 'empty' ? ` · ${fmtCost(ws.cost).compact}` : ''}</div>
+              </div>
+            </li>`).join('')}
+        </ul>` : ''}
 
       <div class="command-columns" style="margin-top:32px;">
         <div>
@@ -307,6 +369,13 @@
       <p class="footnote">Task quality is not measured yet — Execution success reflects whether a run finished without error, not whether its output was good.</p>
     `;
     animateEnter(el.viewCommand);
+    el.viewCommand.querySelectorAll('[data-workstream-id]').forEach((li) => {
+      li.addEventListener('click', () => {
+        state.selectedWorkstreamId = li.dataset.workstreamId;
+        state.workstreamsShowingDetail = true;
+        showView('workstreams');
+      });
+    });
   }
 
   // ---------------- Agents (list + detail split) ----------------
@@ -337,8 +406,19 @@
       state.selectedAgentId = state.agents[0].id;
     }
 
+    const workstreamOptions = state.workstreams
+      .map((w) => `<option value="${w.id}" ${state.agentsWorkstreamFilter === w.id ? 'selected' : ''}>${escapeHtml(w.name)}</option>`)
+      .join('');
+
     el.viewAgents.innerHTML = `
-      <div class="view-header"><h2 class="view-heading">Agents</h2></div>
+      <div class="view-header">
+        <h2 class="view-heading">Agents</h2>
+        ${state.workstreams.length > 0 ? `
+          <select id="agents-workstream-filter" class="select-input" aria-label="Filter by workstream">
+            <option value="">All workstreams</option>
+            ${workstreamOptions}
+          </select>` : ''}
+      </div>
       <div class="agents-split">
         <div class="agent-index${state.agentsShowingDetail ? ' has-detail' : ''}" id="agent-index"></div>
         <div id="agent-detail-panel" class="${state.agentsShowingDetail ? 'showing' : ''}">${loadingSkeleton()}</div>
@@ -346,6 +426,14 @@
     `;
     animateEnter(el.viewAgents);
     renderAgentIndex();
+
+    const filterEl = document.getElementById('agents-workstream-filter');
+    if (filterEl) {
+      filterEl.addEventListener('change', () => {
+        state.agentsWorkstreamFilter = filterEl.value;
+        renderAgentIndex();
+      });
+    }
 
     try {
       await loadAgentDetail(state.selectedAgentId);
@@ -362,18 +450,23 @@
   function renderAgentIndex() {
     const indexEl = document.getElementById('agent-index');
     if (!indexEl) return;
-    indexEl.innerHTML = state.agents.map((agent) => {
-      const status = statusOf(agent.id);
-      return `
-        <div class="agent-row ${agent.id === state.selectedAgentId ? 'active' : ''}" data-id="${agent.id}">
-          ${StatusIndicator(status)}
-          <div class="info">
-            <div class="name">${escapeHtml(agent.name)}</div>
-            <div class="role">${escapeHtml(agent.role || agent.provider)}</div>
-          </div>
-          <div class="cost">${fmtCost(agent.cost).compact}</div>
-        </div>`;
-    }).join('');
+    const visible = state.agentsWorkstreamFilter
+      ? state.agents.filter((a) => a.workstreamId === state.agentsWorkstreamFilter)
+      : state.agents;
+    indexEl.innerHTML = visible.length === 0
+      ? EmptyState('No agents in this workstream.')
+      : visible.map((agent) => {
+        const status = statusOf(agent.id);
+        return `
+          <div class="agent-row ${agent.id === state.selectedAgentId ? 'active' : ''}" data-id="${agent.id}">
+            ${StatusIndicator(status)}
+            <div class="info">
+              <div class="name">${escapeHtml(agent.name)}</div>
+              <div class="role">${escapeHtml(agent.role || agent.provider)}</div>
+            </div>
+            <div class="cost">${fmtCost(agent.cost).compact}</div>
+          </div>`;
+      }).join('');
     indexEl.querySelectorAll('.agent-row').forEach((rowEl) => {
       rowEl.addEventListener('click', () => selectAgent(rowEl.dataset.id));
     });
@@ -425,6 +518,7 @@
         </div>
 
         <div class="detail-data">
+          ${DataRow('Workstream', agent.workstreamName ? escapeHtml(agent.workstreamName) : 'Unassigned', !agent.workstreamName)}
           ${DataRow('Provider', escapeHtml(agent.provider))}
           ${DataRow(agent.provider === 'custom' ? 'Command' : 'Model', escapeHtml(agent.provider === 'custom' ? agent.command : (agent.model || 'default')))}
           ${DataRow('Registered', fmtDateTime(new Date(agent.createdAt).getTime()), true)}
@@ -528,6 +622,213 @@
     }
   });
 
+  // ---------------- Workstreams (list + detail split) ----------------
+
+  function getWorkstream(id) { return state.workstreams.find((w) => w.id === id); }
+
+  async function renderWorkstreams() {
+    if (state.workstreams.length === 0) {
+      el.viewWorkstreams.innerHTML = `
+        <div class="view-header">
+          <h2 class="view-heading">Workstreams</h2>
+          <button class="btn btn-primary" id="new-workstream-btn">+ New Workstream</button>
+        </div>
+        <p class="empty-note">No workstreams yet. Create your first objective.<br>Agents can later be assigned to it.</p>
+      `;
+      document.getElementById('new-workstream-btn').addEventListener('click', () => openWorkstreamModal(null));
+      animateEnter(el.viewWorkstreams);
+      return;
+    }
+
+    if (!state.selectedWorkstreamId || !getWorkstream(state.selectedWorkstreamId)) {
+      state.selectedWorkstreamId = state.workstreams[0].id;
+    }
+
+    el.viewWorkstreams.innerHTML = `
+      <div class="view-header">
+        <h2 class="view-heading">Workstreams</h2>
+        <button class="btn btn-primary" id="new-workstream-btn">+ New Workstream</button>
+      </div>
+      <div class="workstream-split">
+        <div class="workstream-index${state.workstreamsShowingDetail ? ' has-detail' : ''}" id="workstream-index"></div>
+        <div id="workstream-detail-panel" class="${state.workstreamsShowingDetail ? 'showing' : ''}"></div>
+      </div>
+    `;
+    animateEnter(el.viewWorkstreams);
+    document.getElementById('new-workstream-btn').addEventListener('click', () => openWorkstreamModal(null));
+    renderWorkstreamIndex();
+    renderWorkstreamDetailPanel();
+  }
+
+  function renderWorkstreamIndex() {
+    const indexEl = document.getElementById('workstream-index');
+    if (!indexEl) return;
+    indexEl.innerHTML = state.workstreams.map((ws) => `
+      <div class="workstream-row ${ws.id === state.selectedWorkstreamId ? 'active' : ''}" data-id="${ws.id}">
+        ${WorkstreamStatusIndicator(ws.status)}
+        <div class="info">
+          <div class="name">${escapeHtml(ws.name)}</div>
+          <div class="meta">${ws.agentCount} agent${ws.agentCount === 1 ? '' : 's'}${ws.archived ? ' · archived' : ''}</div>
+        </div>
+        <div class="count">${ws.runCount}</div>
+      </div>`).join('');
+    indexEl.querySelectorAll('.workstream-row').forEach((rowEl) => {
+      rowEl.addEventListener('click', () => selectWorkstream(rowEl.dataset.id));
+    });
+  }
+
+  function selectWorkstream(id) {
+    const sameWs = id === state.selectedWorkstreamId;
+    state.selectedWorkstreamId = id;
+    state.workstreamsShowingDetail = true;
+    document.getElementById('workstream-index')?.classList.add('has-detail');
+    document.getElementById('workstream-detail-panel')?.classList.add('showing');
+    renderWorkstreamIndex();
+    if (!sameWs) renderWorkstreamDetailPanel();
+  }
+
+  function renderWorkstreamDetailPanel() {
+    const ws = getWorkstream(state.selectedWorkstreamId);
+    const panel = document.getElementById('workstream-detail-panel');
+    if (!ws || !panel) return;
+
+    const memberAgents = state.agents.filter((a) => a.workstreamId === ws.id);
+    const relatedActivity = state.activity.filter((e) => e.details?.workstreamId === ws.id).slice(0, 6);
+    const cost = fmtCost(ws.cost);
+
+    panel.innerHTML = `
+      <div class="detail-panel">
+        <button class="detail-back" id="ws-detail-back">&larr; All workstreams</button>
+        <div class="detail-header">
+          <div>
+            <h2 class="detail-name">${escapeHtml(ws.name)}</h2>
+            <div class="detail-role">${escapeHtml(ws.description || 'No description set')}</div>
+            <div class="detail-status-row">${WorkstreamStatusIndicator(ws.status)}</div>
+          </div>
+          <div class="detail-actions">
+            <button class="btn" id="ws-edit-btn">Edit</button>
+            <button class="btn" id="ws-archive-btn">${ws.archived ? 'Unarchive' : 'Archive'}</button>
+          </div>
+        </div>
+
+        <div class="detail-data">
+          ${DataRow('Owner', ws.owner ? escapeHtml(ws.owner) : 'Unassigned', !ws.owner)}
+          ${DataRow('Agents', String(ws.agentCount))}
+          ${DataRow('Runs', `${ws.runCount} total`)}
+          ${DataRow('Completed / failed / cancelled', `${ws.completedRuns} / ${ws.failedRuns} / ${ws.cancelledRuns}`)}
+          ${DataRow('Execution success', fmtPercent(ws.executionSuccessRate))}
+          ${DataRow('Cost', cost.full)}
+          ${DataRow('Progress', 'Progress unavailable', true)}
+          ${DataRow('Last activity', ws.lastActivity ? fmtDateTime(ws.lastActivity) : 'No activity yet', !ws.lastActivity)}
+        </div>
+        ${cost.supporting ? `<p class="footnote" style="margin-top:-20px;margin-bottom:24px;">${escapeHtml(cost.supporting)}</p>` : ''}
+        <p class="footnote" style="margin-top:-20px;margin-bottom:24px;">Progress requires a defined scope of planned work, which isn't tracked yet — this reflects run outcomes only.</p>
+
+        <div class="detail-columns">
+          <div>
+            <p class="section-title">Participating agents</p>
+            ${memberAgents.length === 0 ? EmptyState('No agents assigned yet.') : `
+              <ul class="attention-list" id="ws-agent-list">${memberAgents.map((a) => `
+                <li class="attention-item" data-agent-id="${a.id}" style="cursor:pointer;">
+                  ${StatusIndicator(statusOf(a.id))}
+                  <div class="body"><div class="title">${escapeHtml(a.name)}</div><div class="meta">${escapeHtml(a.role || a.provider)}</div></div>
+                </li>`).join('')}</ul>`}
+          </div>
+          <div>
+            <p class="section-title">Recent activity</p>
+            ${relatedActivity.length === 0 ? EmptyState('No activity yet.') : `
+              <ul class="mini-activity">${relatedActivity.map((e) => `
+                <li class="mini-activity-item">
+                  <span class="time">${fmtTime(e.ts)}</span>
+                  <span class="desc">${escapeHtml(humanizeEvent(e))}</span>
+                </li>`).join('')}</ul>`}
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('ws-detail-back').addEventListener('click', () => {
+      state.workstreamsShowingDetail = false;
+      document.getElementById('workstream-index')?.classList.remove('has-detail');
+      document.getElementById('workstream-detail-panel')?.classList.remove('showing');
+    });
+    document.getElementById('ws-edit-btn').addEventListener('click', () => openWorkstreamModal(ws));
+    document.getElementById('ws-archive-btn').addEventListener('click', () => toggleArchive(ws));
+    panel.querySelectorAll('#ws-agent-list [data-agent-id]').forEach((li) => {
+      li.addEventListener('click', () => {
+        state.selectedAgentId = li.dataset.agentId;
+        state.agentsShowingDetail = true;
+        showView('agents');
+      });
+    });
+  }
+
+  async function toggleArchive(ws) {
+    try {
+      await api(`/api/workstreams/${ws.id}/${ws.archived ? 'unarchive' : 'archive'}`, { method: 'POST' });
+      await refreshData();
+      renderWorkstreamDetailPanel();
+    } catch (err) {
+      alert(`Failed to update workstream: ${err.message}`);
+    }
+  }
+
+  function openWorkstreamModal(ws) {
+    state.editingWorkstreamId = ws ? ws.id : null;
+    el.wsModalTitle.textContent = ws ? `Edit ${ws.name}` : 'New Workstream';
+    el.wsModalError.textContent = '';
+    el.wsForm.reset();
+    const override = ws ? (ws.statusOverride || '') : '';
+    el.statusSegmented.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.status === override));
+    el.statusOverrideInput.value = override;
+    if (ws) {
+      el.wsForm.name.value = ws.name;
+      el.wsForm.description.value = ws.description || '';
+      el.wsForm.owner.value = ws.owner || '';
+    }
+    el.wsModalOverlay.classList.remove('hidden');
+    setTimeout(() => el.wsForm.name.focus(), 50);
+  }
+
+  function closeWorkstreamModal() {
+    el.wsModalOverlay.classList.add('hidden');
+    state.editingWorkstreamId = null;
+  }
+
+  el.statusSegmented.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      el.statusSegmented.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === btn));
+      el.statusOverrideInput.value = btn.dataset.status;
+    });
+  });
+
+  el.wsModalCancel.addEventListener('click', closeWorkstreamModal);
+  el.wsModalOverlay.addEventListener('click', (e) => { if (e.target === el.wsModalOverlay) closeWorkstreamModal(); });
+
+  el.wsForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const payload = Object.fromEntries(new FormData(el.wsForm).entries());
+    el.wsModalError.textContent = '';
+    if (!payload.name || !payload.name.trim()) {
+      el.wsModalError.textContent = 'Name is required.';
+      return;
+    }
+    try {
+      if (state.editingWorkstreamId) {
+        await api(`/api/workstreams/${state.editingWorkstreamId}`, { method: 'PUT', body: JSON.stringify(payload) });
+      } else {
+        const created = await api('/api/workstreams', { method: 'POST', body: JSON.stringify(payload) });
+        state.selectedWorkstreamId = created.id;
+        state.workstreamsShowingDetail = true;
+      }
+      closeWorkstreamModal();
+      await refreshData();
+      populateWorkstreamSelect();
+    } catch (err) {
+      el.wsModalError.textContent = err.message;
+    }
+  });
+
   // ---------------- Activity (two-level disclosure) ----------------
 
   const ACTIVITY_FILTERS = [
@@ -546,7 +847,11 @@
       <div class="activity-toolbar segmented" id="activity-filter">
         ${ACTIVITY_FILTERS.map((f) => `<button type="button" data-filter="${f.key}" class="${f.key === state.activityFilter ? 'active' : ''}">${f.label}</button>`).join('')}
       </div>
-      <div class="activity-list" id="activity-list"></div>
+      <div class="activity-toolbar segmented" id="activity-grouping" style="margin-top:-10px;">
+        <button type="button" data-grouped="0" class="${!state.activityGrouped ? 'active' : ''}">Flat</button>
+        <button type="button" data-grouped="1" class="${state.activityGrouped ? 'active' : ''}">Grouped by workstream</button>
+      </div>
+      <div id="activity-list"></div>
     `;
     animateEnter(el.viewActivity);
 
@@ -557,7 +862,25 @@
         renderActivityRows();
       });
     });
+    document.getElementById('activity-grouping').querySelectorAll('button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.activityGrouped = btn.dataset.grouped === '1';
+        document.querySelectorAll('#activity-grouping button').forEach((b) => b.classList.toggle('active', b === btn));
+        renderActivityRows();
+      });
+    });
     renderActivityRows();
+  }
+
+  function wireActivityRowExpansion(container) {
+    container.querySelectorAll('.activity-row-summary').forEach((rowEl) => {
+      rowEl.addEventListener('click', () => {
+        const id = rowEl.closest('.activity-row').dataset.id;
+        if (state.expandedActivity.has(id)) state.expandedActivity.delete(id);
+        else state.expandedActivity.add(id);
+        rowEl.closest('.activity-row').classList.toggle('expanded');
+      });
+    });
   }
 
   function renderActivityRows() {
@@ -572,16 +895,38 @@
       return;
     }
 
-    list.innerHTML = filtered.map((e) => activityRowHtml(e)).join('');
+    if (!state.activityGrouped) {
+      list.innerHTML = `<div class="activity-list">${filtered.map((e) => activityRowHtml(e)).join('')}</div>`;
+      wireActivityRowExpansion(list);
+      return;
+    }
 
-    list.querySelectorAll('.activity-row-summary').forEach((rowEl) => {
-      rowEl.addEventListener('click', () => {
-        const id = rowEl.closest('.activity-row').dataset.id;
-        if (state.expandedActivity.has(id)) state.expandedActivity.delete(id);
-        else state.expandedActivity.add(id);
-        rowEl.closest('.activity-row').classList.toggle('expanded');
-      });
+    // Grouped: same events, same rows — just organized under the workstream
+    // they were snapshotted to when the run happened. Underlying event data
+    // is untouched; only presentation changes.
+    const groups = new Map(); // workstreamId|'unassigned' -> events[]
+    for (const e of filtered) {
+      const key = e.details?.workstreamId || 'unassigned';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(e);
+    }
+    // Named workstreams first (by most recent event), "Unassigned" last.
+    const orderedKeys = [...groups.keys()].sort((a, b) => {
+      if (a === 'unassigned') return 1;
+      if (b === 'unassigned') return -1;
+      return groups.get(b)[0].ts - groups.get(a)[0].ts;
     });
+
+    list.innerHTML = orderedKeys.map((key) => {
+      const events = groups.get(key);
+      const name = key === 'unassigned' ? 'Unassigned' : (getWorkstream(key)?.name || 'Unknown workstream');
+      return `
+        <div class="activity-group">
+          <div class="activity-group-header">${escapeHtml(name)} <span class="count">· ${events.length} event${events.length === 1 ? '' : 's'}</span></div>
+          <div class="activity-list">${events.map((e) => activityRowHtml(e)).join('')}</div>
+        </div>`;
+    }).join('');
+    wireActivityRowExpansion(list);
   }
 
   function activityRowHtml(e) {
@@ -628,6 +973,14 @@
     });
   });
 
+  function populateWorkstreamSelect() {
+    if (!el.workstreamSelect) return;
+    const current = el.workstreamSelect.value;
+    el.workstreamSelect.innerHTML = '<option value="">Unassigned</option>' +
+      state.workstreams.map((w) => `<option value="${w.id}">${escapeHtml(w.name)}</option>`).join('');
+    if (state.workstreams.some((w) => w.id === current)) el.workstreamSelect.value = current;
+  }
+
   function openModal(agent) {
     state.editingId = agent ? agent.id : null;
     el.modalTitle.textContent = agent ? `Edit ${agent.name}` : 'New Agent';
@@ -643,8 +996,10 @@
       el.form.task.value = agent.task || '';
       el.form.command.value = agent.command || '';
       el.form.maxTokens.value = agent.maxTokens || 1024;
+      el.workstreamSelect.value = agent.workstreamId || '';
     } else {
       el.form.maxTokens.value = 1024;
+      el.workstreamSelect.value = '';
     }
     fieldsForProvider(provider);
     el.modalOverlay.classList.remove('hidden');
@@ -701,6 +1056,7 @@
   function render() {
     renderSystemLine();
     if (state.view === 'command') renderCommand();
+    else if (state.view === 'workstreams') renderWorkstreams();
     else if (state.view === 'agents') renderAgents();
     else if (state.view === 'activity') renderActivity();
   }
@@ -753,6 +1109,8 @@
           renderActivityRows();
           const row = document.querySelector(`.activity-row[data-id="${msg.event.id}"]`);
           if (row && !prefersReducedMotion) row.classList.add('new-event');
+        } else if (state.view === 'workstreams' && state.workstreamsShowingDetail) {
+          renderWorkstreamDetailPanel();
         }
       }
     });

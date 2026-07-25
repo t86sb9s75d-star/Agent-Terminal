@@ -19,7 +19,12 @@ function readAll() {
   ensureFile();
   const raw = fs.readFileSync(AGENTS_FILE, 'utf8');
   try {
-    return JSON.parse(raw);
+    const agents = JSON.parse(raw);
+    // Non-destructive migration: agents saved before workstreams existed
+    // simply don't have this field yet. Default it in memory rather than
+    // rewriting the file — it becomes permanent only once the agent is
+    // next actually saved (create/update).
+    return agents.map((a) => (a.workstreamId !== undefined ? a : { ...a, workstreamId: null }));
   } catch {
     return [];
   }
@@ -85,6 +90,7 @@ function create(data) {
     task: data.task || '',
     command: data.command || '',
     maxTokens: data.maxTokens ? Number(data.maxTokens) : 1024,
+    workstreamId: data.workstreamId || null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -108,6 +114,7 @@ function update(id, data) {
     task: data.task !== undefined ? data.task : existing.task,
     command: data.command !== undefined ? data.command : existing.command,
     maxTokens: data.maxTokens !== undefined ? Number(data.maxTokens) : existing.maxTokens,
+    workstreamId: data.workstreamId !== undefined ? (data.workstreamId || null) : existing.workstreamId,
     updatedAt: new Date().toISOString(),
   };
   if (!VALID_PROVIDERS.includes(updated.provider)) {

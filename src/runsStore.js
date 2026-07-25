@@ -26,13 +26,18 @@ function writeAll(runs) {
   fs.writeFileSync(RUNS_FILE, JSON.stringify(trimmed, null, 2), 'utf8');
 }
 
-function startRun({ agentId, provider, model }) {
+function startRun({ agentId, provider, model, workstreamId }) {
   const runs = readAll();
   const run = {
     id: crypto.randomUUID(),
     agentId,
     provider,
     model: model || null,
+    // Snapshotted at start time, permanently. If the agent is later moved
+    // to a different workstream (or removed from one), this run's
+    // attribution does not change — history stays accurate to what was
+    // true when the work actually happened.
+    workstreamId: workstreamId || null,
     startedAt: Date.now(),
     endedAt: null,
     durationMs: null,
@@ -71,6 +76,10 @@ function listForAgent(agentId, limit = 50) {
     .filter((r) => r.agentId === agentId)
     .sort((a, b) => b.startedAt - a.startedAt)
     .slice(0, limit);
+}
+
+function listAll() {
+  return readAll();
 }
 
 function isToday(ts) {
@@ -160,4 +169,4 @@ function summarizeForAgent(agentId) {
   };
 }
 
-module.exports = { startRun, finishRun, listForAgent, summarize, summarizeForAgent, aggregateCost, executionSuccessRate };
+module.exports = { startRun, finishRun, listForAgent, listAll, summarize, summarizeForAgent, aggregateCost, executionSuccessRate };

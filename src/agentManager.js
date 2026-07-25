@@ -86,7 +86,12 @@ async function start(id) {
 
   rt.startedAt = Date.now();
   rt.abortController = new AbortController();
-  const run = runsStore.startRun({ agentId: id, provider: agent.provider, model: agent.model });
+  const run = runsStore.startRun({
+    agentId: id,
+    provider: agent.provider,
+    model: agent.model,
+    workstreamId: agent.workstreamId,
+  });
   rt.runId = run.id;
 
   setStatus(id, 'running');
@@ -96,7 +101,13 @@ async function start(id) {
     action: 'run.started',
     entityType: 'agent',
     entityId: id,
-    details: { agentName: agent.name, provider: agent.provider, model: agent.model, runId: run.id },
+    details: {
+      agentName: agent.name,
+      provider: agent.provider,
+      model: agent.model,
+      runId: run.id,
+      workstreamId: agent.workstreamId,
+    },
   });
 
   const onLog = (chunk) => appendLog(id, chunk);
@@ -143,6 +154,7 @@ async function start(id) {
       details: {
         agentName: agent.name,
         runId: rt.runId,
+        workstreamId: agent.workstreamId,
         inputTokens,
         outputTokens,
         costUsd,
@@ -185,7 +197,7 @@ function stop(id) {
     action: 'run.stop_requested',
     entityType: 'agent',
     entityId: id,
-    details: { agentName: agent?.name, runId: rt.runId },
+    details: { agentName: agent?.name, runId: rt.runId, workstreamId: agent?.workstreamId },
   });
 }
 
