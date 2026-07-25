@@ -143,10 +143,15 @@
     return { idle: 'Idle', running: 'Running', completed: 'Completed', error: 'Failed', cancelled: 'Stopped' }[status] || status;
   }
 
+  function agentStatusClass(status) {
+    return ['idle', 'running', 'completed', 'error', 'cancelled'].includes(status) ? status : 'idle';
+  }
+
   // Workstream statuses are already human-readable (Planning/Active/Blocked/
   // Review/Completed/Archived) — this just maps to the lowercase CSS class.
   function workstreamStatusClass(status) {
-    return String(status || 'planning').toLowerCase();
+    const normalized = String(status || 'Planning').toLowerCase();
+    return ['planning', 'active', 'blocked', 'review', 'completed', 'archived'].includes(normalized) ? normalized : 'planning';
   }
 
   function WorkstreamStatusIndicator(status) {
@@ -227,7 +232,7 @@
   // ---------------- Primitives (render helpers) ----------------
 
   function StatusIndicator(status) {
-    return `<span class="status status-${status}">${statusLabel(status)}</span>`;
+    return `<span class="status status-${agentStatusClass(status)}">${escapeHtml(statusLabel(status))}</span>`;
   }
 
   function Metric(value, label, opts = {}) {
