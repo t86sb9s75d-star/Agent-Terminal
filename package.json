@@ -1,0 +1,24 @@
+{
+  "name": "agent-terminal",
+  "version": "1.0.0",
+  "description": "A localized, harnessed and secured HUB to store, operate, and improve your agents cohesively, and efficiently.",
+  "main": "lib/store.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "bin": {
+    "agent-terminal": "bin/agent-terminal.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/t86sb9s75d-star/Agent-Terminal.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/t86sb9s75d-star/Agent-Terminal/issues"
+  },
+  "homepage": "https://github.com/t86sb9s75d-star/Agent-Terminal#readme"
+}
