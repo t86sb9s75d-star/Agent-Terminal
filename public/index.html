@@ -29,7 +29,6 @@
         <section id="view-command" class="view"></section>
         <section id="view-agents" class="view hidden"></section>
         <section id="view-activity" class="view hidden"></section>
-        <section id="view-agent-detail" class="view hidden"></section>
       </main>
     </div>
   </div>
@@ -47,32 +46,33 @@
       </label>
 
       <label>Provider
-        <select name="provider" id="provider-select" required>
-          <option value="anthropic">Anthropic</option>
-          <option value="openai">OpenAI</option>
-          <option value="custom">Custom command</option>
-        </select>
+        <div class="segmented" id="provider-segmented" role="tablist">
+          <button type="button" data-provider="anthropic" class="active">Anthropic</button>
+          <button type="button" data-provider="openai">OpenAI</button>
+          <button type="button" data-provider="custom">Custom</button>
+        </div>
+        <input type="hidden" name="provider" id="provider-input" value="anthropic" />
       </label>
 
-      <label id="model-field">Model
+      <div id="model-field" class="field-transition"><label>Model
         <input type="text" name="model" placeholder="e.g. claude-sonnet-5" />
-      </label>
+      </label></div>
 
-      <label id="system-field">System prompt
+      <div id="system-field" class="field-transition"><label>System prompt
         <textarea name="systemPrompt" rows="2" placeholder="Optional"></textarea>
-      </label>
+      </label></div>
 
-      <label id="task-field">Task / prompt
+      <div id="task-field" class="field-transition"><label>Task / prompt
         <textarea name="task" rows="4" placeholder="What should this agent do?"></textarea>
-      </label>
+      </label></div>
 
-      <label id="command-field">Shell command
+      <div id="command-field" class="field-transition field-hidden"><label>Shell command
         <textarea name="command" rows="2" placeholder="e.g. python3 my_agent.py"></textarea>
-      </label>
+      </label></div>
 
-      <label id="tokens-field">Max tokens
+      <div id="tokens-field" class="field-transition"><label>Max tokens
         <input type="number" name="maxTokens" value="1024" min="1" />
-      </label>
+      </label></div>
 
       <div class="modal-actions">
         <button type="button" class="btn" id="modal-cancel">Cancel</button>
@@ -80,6 +80,17 @@
       </div>
       <p class="modal-error" id="modal-error"></p>
     </form>
+  </div>
+
+  <div class="modal-overlay hidden" id="confirm-overlay">
+    <div class="modal confirm-dialog">
+      <h3 id="confirm-title">Are you sure?</h3>
+      <p id="confirm-body"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="confirm-cancel">Cancel</button>
+        <button type="button" class="btn btn-danger" id="confirm-ok">Delete</button>
+      </div>
+    </div>
   </div>
 
   <script src="app.js"></script>

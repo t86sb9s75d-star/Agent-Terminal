@@ -11,12 +11,24 @@ Naismith is the intelligence system; Rucker Park is where it's operated. This fi
 - **Start / stop / status** — run agents on demand and track their lifecycle (idle, running, completed, failed, cancelled).
 - **Live log streaming** — agent output streams to the browser over WebSocket as it's produced, and is persisted per-agent so you can revisit it later.
 - **Multi-provider** — built-in runners for Anthropic and OpenAI (streaming chat completions), plus a `custom` provider that runs any local shell command as an agent.
-- **Real cost tracking** — token usage is read from each provider's response and priced against a documented table (`src/pricing.js`). Unknown models show `—`, never a guessed number.
+- **Real cost tracking** — token usage is read from each provider's response and priced against a documented table (`src/pricing.js`). Cost aggregates are structured (`complete` / `partial` / `unavailable` / `empty`) so a mix of priced and unpriced runs is never silently summed and shown as if it were a complete total — see `test/runsStore.pricing.test.js`.
 - **Run history** — every run is a discrete, timestamped record (duration, tokens, cost, outcome), queryable per agent.
-- **Audit trail** — every state-changing action (agent created/edited/deleted, every run started/stopped/completed/failed) is logged append-only with actor, timestamp, and details, and streamed live to the Activity view.
+- **Audit trail** — every state-changing action (agent created/edited/deleted, every run started/stopped/completed/failed) is logged append-only with actor, timestamp, and details, and streamed live to the Activity view (two-level: human-readable summary, expandable technical detail).
 - **Registry integrity check** — `agents.json` is hash-verified on every server start; an edit made outside the API (bypassing the system) is flagged in the audit trail instead of silently accepted.
 
-What's deliberately **not** measured yet: task/answer quality, decision quality, or any single "reliability" score. Cards show "Execution success" (did the run finish without error) and "Task quality: Not measured" — those are different things, and only the first one is real right now.
+What's deliberately **not** measured yet: task/answer quality, decision quality, or any single "reliability" score. Cards show "Execution success" (did the run finish without error — cancelled runs are excluded from this rate, not scored as failures, since stopping a run is an operator decision) and "Task quality: Not measured" — those are different things, and only the first one is real right now.
+
+## Design system
+
+The UI follows `docs/VISUAL_REFERENCE_AUDIT.md` — a short, practical record of the structural patterns (hierarchy, typography, segmented-control usage, motion restraint) it's built against, so later changes have something concrete to check themselves against instead of drifting back toward generic dashboard defaults.
+
+## Tests
+
+```bash
+npm test
+```
+
+Covers the cost-aggregation and execution-success semantics described above (`test/`). These are the two places a well-intentioned refactor could quietly reintroduce a misleading number, so they're pinned down explicitly.
 
 ## Getting started
 

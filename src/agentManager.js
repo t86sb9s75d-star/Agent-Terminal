@@ -179,12 +179,13 @@ function stop(id) {
   if (rt.status !== 'running') throw new Error('agent is not running');
   if (rt.child) rt.child.kill('SIGTERM');
   if (rt.abortController) rt.abortController.abort();
+  const agent = store.get(id);
   eventLog.record({
     actor: 'operator',
     action: 'run.stop_requested',
     entityType: 'agent',
     entityId: id,
-    details: { runId: rt.runId },
+    details: { agentName: agent?.name, runId: rt.runId },
   });
 }
 
