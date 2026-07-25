@@ -255,6 +255,18 @@ button { font-family: inherit; font-size: inherit; color: inherit; }
   margin: 0;
 }
 
+.select-input {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-small);
+  font-family: var(--font-ui);
+}
+
+.select-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
 /* --- Buttons --- */
 .btn {
   background: var(--bg-elevated);
@@ -296,15 +308,31 @@ button { font-family: inherit; font-size: inherit; color: inherit; }
 .status-cancelled { color: var(--text-muted); }
 .status-cancelled::before { width: 6px; height: 2px; border-radius: 1px; margin-top: 2px; } /* dash = stopped */
 
+/* Workstream status vocabulary — a separate namespace from run/agent status
+   above (different lifecycle, different meaning), but same component and
+   same discipline: shape carries meaning, not just color. */
+.status-planning { color: var(--text-faint); }
+.status-planning::before { border-radius: 1px; } /* square = not yet started, same as idle */
+.status-active { color: var(--accent-text); } /* plain dot — no glow, distinct from a literal running run */
+.status-blocked { color: var(--amber); }
+.status-blocked::before { background: transparent; border: 1.5px solid currentColor; width: 5px; height: 5px; } /* ring = needs attention, distinct from failure's diamond */
+.status-review { color: var(--purple); }
+.status-archived { color: var(--text-faint); }
+.status-archived::before { width: 6px; height: 2px; border-radius: 1px; margin-top: 2px; } /* dash, same as cancelled — inactive/closed */
+
 .status.flash { animation: status-flash var(--duration-slow) var(--ease-out); }
 @keyframes status-flash {
   0% { opacity: 0.3; }
   100% { opacity: 1; }
 }
 
-/* --- SegmentedControl: real in-place toggle, not decorative pills --- */
+/* --- SegmentedControl: real in-place toggle, not decorative pills ---
+   Wraps by default — most segmented controls (provider, status) live in a
+   fixed-width modal and must never overflow it. The Activity filter is the
+   one exception (below): a long list of categories that scrolls instead. */
 .segmented {
   display: inline-flex;
+  flex-wrap: wrap;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   padding: 2px;
@@ -321,9 +349,13 @@ button { font-family: inherit; font-size: inherit; color: inherit; }
   font-weight: var(--weight-medium);
   cursor: pointer;
   white-space: nowrap;
-  flex: 0 0 auto;
   transition: background var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard);
 }
+
+/* The Activity filter bar: many categories, single row, scrolls instead of
+   wrapping or growing the page — matches the nav rail's mobile pattern. */
+.activity-toolbar.segmented { flex-wrap: nowrap; }
+.activity-toolbar.segmented button { flex: 0 0 auto; }
 
 .segmented button:hover:not(.active) { color: var(--text); }
 .segmented button.active { background: var(--accent-soft); color: var(--accent-text); }
@@ -531,6 +563,42 @@ button { font-family: inherit; font-size: inherit; color: inherit; }
 .agent-row .role { font-size: var(--text-micro); color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-row .cost { font-size: var(--text-small); color: var(--text-muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
 
+/* ============================================================
+   Workstreams — same list/detail language as Agents, kept as a
+   parallel set of rules (not shared classes) so nothing here can
+   ever affect the Agents view.
+   ============================================================ */
+
+.workstream-split {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: var(--space-8);
+  align-items: start;
+  height: 100%;
+}
+
+.workstream-index { border-top: 1px solid var(--border); }
+
+.workstream-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-2);
+  border-bottom: 1px solid var(--border);
+  border-left: 2px solid transparent;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard);
+}
+
+.workstream-row:hover { background: var(--bg-hover); }
+.workstream-row.active { background: var(--accent-soft); border-left-color: var(--accent); }
+
+.workstream-row .status { flex-shrink: 0; }
+.workstream-row .info { flex: 1; min-width: 0; }
+.workstream-row .name { font-size: var(--text-h3); font-weight: var(--weight-medium); color: var(--text); }
+.workstream-row .meta { font-size: var(--text-micro); color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workstream-row .count { font-size: var(--text-small); color: var(--text-muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+
 /* ---------------- Agent detail panel ---------------- */
 
 .detail-panel { animation: view-fade-in var(--duration-base) var(--ease-out); }
@@ -637,6 +705,21 @@ button { font-family: inherit; font-size: inherit; color: inherit; }
 }
 
 .activity-list { border-top: 1px solid var(--border); }
+
+.activity-group { margin-bottom: var(--space-6); }
+.activity-group-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-micro);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-faint);
+  font-weight: var(--weight-semibold);
+  margin: 0 0 var(--space-2);
+}
+.activity-group-header .count { text-transform: none; letter-spacing: 0; color: var(--text-faint); font-weight: var(--weight-regular); }
+.activity-group .activity-list { border-top: none; }
 
 .activity-row {
   border-bottom: 1px solid var(--border);
@@ -787,6 +870,7 @@ button { font-family: inherit; font-size: inherit; color: inherit; }
   .rail { width: var(--nav-width-tablet); }
   .command-columns { grid-template-columns: 1fr; }
   .agents-split { grid-template-columns: 260px 1fr; }
+  .workstream-split { grid-template-columns: 260px 1fr; }
   .command-metrics { grid-template-columns: repeat(3, 1fr); }
   .view { padding: var(--space-6) var(--space-5) 50px; }
 }
@@ -804,6 +888,12 @@ button { font-family: inherit; font-size: inherit; color: inherit; }
   .agent-index.has-detail { display: none; }
   #agent-detail-panel { display: none; }
   #agent-detail-panel.showing { display: block; }
+
+  .workstream-split { grid-template-columns: 1fr; }
+  .workstream-index.has-detail { display: none; }
+  #workstream-detail-panel { display: none; }
+  #workstream-detail-panel.showing { display: block; }
+
   .detail-back { display: inline-block; }
   .command-metrics { grid-template-columns: repeat(3, 1fr); }
   .condition-headline { font-size: 28px; }

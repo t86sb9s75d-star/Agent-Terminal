@@ -123,3 +123,20 @@ transitions respect `prefers-reduced-motion` (durations collapse to ~0).
 | Command | Replaced 5 equal stat tiles with a dominant condition headline, conditional "Active now" / "Needs attention" / "Recently completed" sections (empty-stated when there's nothing), then quieter metrics, then the activity feed. |
 | Agents | Replaced the card grid with an index list (compact, scannable rows: status, name, role, cost) + a detail panel (identity fields as plain rows, live output, run history). List context is preserved when a detail is open. |
 | Activity | Two-level rows: a human-readable summary line always visible, a technical detail block (run id, provider, tokens, cost, error, flag reason) that expands in place. Filtering uses a segmented control over real event categories only. |
+
+---
+
+## Addendum: Phase 2 — Workstreams (organization-centered iteration)
+
+Phase 1 (baseline commit `f096bf0`) is unchanged by this addendum — it established the visual system above. This section records what Phase 2 added and, more importantly, how it stayed inside those rules rather than starting a new visual language.
+
+**What changed conceptually, not visually.** Workstreams introduces a hierarchy (`Workstream → Agents → Runs → Events`) so Command and Activity can talk about objectives ("Authentication — Reviewer's run failed. Builder completed a run.") instead of only disconnected agent events. This is a data-model and information-architecture change. It reuses every visual rule above without exception:
+
+- **No new chrome.** Workstream status (Planning/Active/Blocked/Review/Completed/Archived) uses the same `.status` primitive (shape + color + text) as run/agent status — never a pill. Three new shapes were added (square=Planning, ring=Blocked, plain dot=Review) following the existing rule that shape, not color alone, carries meaning.
+- **Segmented controls stayed disciplined.** The only two new segmented controls are a status *override* picker (a real mutually-exclusive choice that changes the workstream's stored state) and an Activity Flat/Grouped toggle (changes what's displayed, in place). Provider labels, agent rows, cost, and timestamps inside Workstreams are still plain text rows — the same restraint audited above, not relaxed for the new feature.
+- **List/detail language reused, not shared.** The Workstreams view is visually identical to the Agents split view (same spacing, same row treatment, same detail-panel classes), implemented as parallel CSS rules under new class names (`.workstream-row`, not a repurposed `.agent-row`) specifically so nothing about Agents could regress by touching shared classes.
+- **Synthesis is factual, not interpretive.** The Command "Workstreams" section composes its one-line summary from the same `humanizeEvent()` phrasing already used in Activity ("Reviewer's run failed. Builder completed a run."), not invented narrative language ("waiting for fixes," "on track"). The system doesn't understand intent or blockers; the copy doesn't claim it does.
+- **Progress is honestly absent.** A workstream detail panel always shows "Progress unavailable" with a footnote explaining why (no planned-work baseline is tracked). This was a deliberate choice over deriving a run-success ratio and calling it "progress" — those answer different questions, and conflating them would repeat the exact mistake the Phase 1 cost-aggregation fix corrected.
+- **History is permanent by construction, not by convention.** Each run snapshots the workstream it belonged to *at the moment it started* (`runsStore.startRun`). Reassigning an agent later changes where its *future* runs land, never where its past runs are counted — enforced by tests, not just documentation.
+
+Nothing in Missions/Approvals/Decision Rooms/System Map territory was started. Workstreams is the organizational layer; those remain deferred.

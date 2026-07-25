@@ -2,11 +2,12 @@
 
 The agent operations foundation for Naismith — a self-hosted command environment for registering, running, and auditing AI agents across providers.
 
-Naismith is the intelligence system; Rucker Park is where it's operated. This first version is the operational foundation: register an agent, start it, watch it run, stop it, and keep an honest record of what happened — cost, duration, outcome, and a permanent audit trail. Missions, approvals, and the full system map come later, once this layer is solid.
+Naismith is the intelligence system; Rucker Park is where it's operated. This first version is the operational foundation: register an agent, start it, watch it run, stop it, and keep an honest record of what happened — cost, duration, outcome, and a permanent audit trail. Approvals and the full system map come later, once this layer is solid.
 
 ## Features
 
 - **Command view** — a real-time summary of the whole system: active agents, what completed today, what needs attention, cost today, and execution success — no invented metrics.
+- **Workstreams** — group agents around an objective (`Workspace → Workstream → Agents → Runs → Events`). Status (Planning/Active/Blocked/Review/Completed/Archived) is computed from real run outcomes or manually overridden — never auto-promoted to "Review"/"Completed", since the system can't honestly judge that. A run's workstream attribution is a permanent snapshot taken when it started: reassigning an agent later never rewrites history. "Progress" is deliberately always "unavailable" — there's no planned-work baseline to measure it against, and the alternative (faking it from a success ratio) was rejected as misleading.
 - **Agent registry** — define agents (name, role, provider, model, prompt/task or shell command) and persist them to disk.
 - **Start / stop / status** — run agents on demand and track their lifecycle (idle, running, completed, failed, cancelled).
 - **Live log streaming** — agent output streams to the browser over WebSocket as it's produced, and is persisted per-agent so you can revisit it later.
@@ -28,7 +29,7 @@ The UI follows `docs/VISUAL_REFERENCE_AUDIT.md` — a short, practical record of
 npm test
 ```
 
-Covers the cost-aggregation and execution-success semantics described above (`test/`). These are the two places a well-intentioned refactor could quietly reintroduce a misleading number, so they're pinned down explicitly.
+Covers the cost-aggregation, execution-success, and workstream-status/history semantics described above (`test/`). These are the places a well-intentioned refactor could quietly reintroduce a misleading number or silently rewrite history, so they're pinned down explicitly (23 cases across three files).
 
 ## Getting started
 
@@ -56,17 +57,18 @@ Rucker Park has no built-in authentication and the `custom` provider executes ar
 
 ```
 src/
-  server.js        Express API + WebSocket server
-  agentManager.js   Runtime lifecycle: start/stop, run records, audit events
-  store.js          JSON-file backed agent registry + integrity check
-  runsStore.js       Per-run history (tokens, cost, duration, outcome)
-  eventLog.js        Append-only audit trail
-  pricing.js          $/token table used to estimate run cost
-  workers/           One runner per provider (anthropic, openai, custom)
-public/              Rucker Park dashboard (vanilla JS, no build step)
-data/                Runtime state: agents.json, runs.json, events.jsonl, logs/ (gitignored)
+  server.js            Express API + WebSocket server
+  agentManager.js       Runtime lifecycle: start/stop, run records, audit events
+  store.js              JSON-file backed agent registry + integrity check
+  runsStore.js           Per-run history (tokens, cost, duration, outcome, workstream snapshot)
+  workstreamsStore.js     Workstreams: CRUD, effective status, derived metrics
+  eventLog.js             Append-only audit trail
+  pricing.js               $/token table used to estimate run cost
+  workers/               One runner per provider (anthropic, openai, custom)
+public/                  Rucker Park dashboard (vanilla JS, no build step)
+data/                    Runtime state: agents.json, runs.json, workstreams.json, events.jsonl, logs/ (gitignored)
 ```
 
 ## Roadmap (not built yet)
 
-Phase 2+ per the current design direction: missions (grouping agents around an objective, with stages/dependencies/risks), an approvals center for agent actions that need sign-off, decision rooms for structured multi-agent recommendations, and eventually a system map — built only once the underlying objects and events above are real, so every node and animation reflects actual backend state rather than decoration.
+An approvals center for agent actions that need sign-off, decision rooms for structured multi-agent recommendations, and eventually a system map — built only once the underlying objects and events are real, so every node and animation reflects actual backend state rather than decoration.

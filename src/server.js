@@ -8,6 +8,8 @@ const { WebSocketServer } = require('ws');
 const store = require('./store');
 const agentManager = require('./agentManager');
 const eventLog = require('./eventLog');
+const workstreamsStore = require('./workstreamsStore');
+const runsStore = require('./runsStore');
 
 const app = express();
 app.use(express.json());
@@ -64,12 +66,97 @@ app.get('/api/activity', (req, res) => {
   res.json(agentManager.getActivity({ limit, agentId }));
 });
 
+// --- Workstreams ---
+function decorateWorkstream(ws, agents, runs) {
+  const metrics = workstreamsStore.computeMetrics(ws.id, { agents, runs });
+  const status = workstreamsStore.computeEffectiveStatus(ws, metrics);
+  return { ...ws, status, ...metrics };
+}
+
+app.get('/api/workstreams', (req, res) => {
+  const agents = store.list();
+  const runs = runsStore.listAll();
+  const workstreams = workstreamsStore.list().map((ws) => decorateWorkstream(ws, agents, runs));
+  res.json(workstreams);
+});
+
+app.get('/api/workstreams/:id', (req, res) => {
+  const ws = workstreamsStore.get(req.params.id);
+  if (!ws) return res.status(404).json({ error: 'workstream not found' });
+  const agents = store.list();
+  const runs = runsStore.listAll();
+  res.json(decorateWorkstream(ws, agents, runs));
+});
+
+app.post('/api/workstreams', (req, res) => {
+  try {
+    const ws = workstreamsStore.create(req.body || {});
+    eventLog.record({
+      actor: 'operator',
+      action: 'workstream.created',
+      entityType: 'workstream',
+      entityId: ws.id,
+      details: { name: ws.name },
+    });
+    res.status(201).json(ws);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/workstreams/:id', (req, res) => {
+  try {
+    const ws = workstreamsStore.update(req.params.id, req.body || {});
+    eventLog.record({
+      actor: 'operator',
+      action: 'workstream.updated',
+      entityType: 'workstream',
+      entityId: ws.id,
+      details: { name: ws.name, statusOverride: ws.statusOverride },
+    });
+    res.json(ws);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/workstreams/:id/archive', (req, res) => {
+  try {
+    const ws = workstreamsStore.setArchived(req.params.id, true);
+    eventLog.record({
+      actor: 'operator', action: 'workstream.archived', entityType: 'workstream', entityId: ws.id,
+      details: { name: ws.name },
+    });
+    res.json(ws);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/workstreams/:id/unarchive', (req, res) => {
+  try {
+    const ws = workstreamsStore.setArchived(req.params.id, false);
+    eventLog.record({
+      actor: 'operator', action: 'workstream.unarchived', entityType: 'workstream', entityId: ws.id,
+      details: { name: ws.name },
+    });
+    res.json(ws);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // --- Agents CRUD ---
+function withWorkstreamName(agent) {
+  const ws = agent.workstreamId ? workstreamsStore.get(agent.workstreamId) : null;
+  return { ...agent, workstreamName: ws ? ws.name : null };
+}
+
 app.get('/api/agents', (req, res) => {
   const statuses = agentManager.getAllStatuses();
   const agents = store.list().map((a) => {
     const runSummary = agentManager.getAgentRuns(a.id).summary;
-    return { ...a, ...statuses[a.id], ...runSummary };
+    return withWorkstreamName({ ...a, ...statuses[a.id], ...runSummary });
   });
   res.json(agents);
 });
@@ -78,7 +165,7 @@ app.get('/api/agents/:id', (req, res) => {
   const agent = store.get(req.params.id);
   if (!agent) return res.status(404).json({ error: 'agent not found' });
   const runSummary = agentManager.getAgentRuns(agent.id).summary;
-  res.json({ ...agent, status: agentManager.getStatus(agent.id), ...runSummary });
+  res.json(withWorkstreamName({ ...agent, status: agentManager.getStatus(agent.id), ...runSummary }));
 });
 
 app.get('/api/agents/:id/runs', (req, res) => {
@@ -107,6 +194,7 @@ app.put('/api/agents/:id', (req, res) => {
     if (agentManager.getStatus(req.params.id) === 'running') {
       return res.status(409).json({ error: 'stop the agent before editing it' });
     }
+    const before = store.get(req.params.id);
     const agent = store.update(req.params.id, req.body || {});
     eventLog.record({
       actor: 'operator',
@@ -115,7 +203,24 @@ app.put('/api/agents/:id', (req, res) => {
       entityId: agent.id,
       details: { name: agent.name, provider: agent.provider },
     });
-    res.json(agent);
+    if (before && before.workstreamId !== agent.workstreamId) {
+      const fromWs = before.workstreamId ? workstreamsStore.get(before.workstreamId) : null;
+      const toWs = agent.workstreamId ? workstreamsStore.get(agent.workstreamId) : null;
+      eventLog.record({
+        actor: 'operator',
+        action: 'agent.workstream_changed',
+        entityType: 'agent',
+        entityId: agent.id,
+        details: {
+          agentName: agent.name,
+          fromWorkstreamId: before.workstreamId,
+          fromWorkstreamName: fromWs ? fromWs.name : null,
+          toWorkstreamId: agent.workstreamId,
+          toWorkstreamName: toWs ? toWs.name : null,
+        },
+      });
+    }
+    res.json(withWorkstreamName(agent));
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

@@ -19,6 +19,7 @@
     <div class="shell-body">
       <nav class="rail">
         <button class="rail-item active" data-view="command"><span class="label">Command</span></button>
+        <button class="rail-item" data-view="workstreams"><span class="label">Workstreams</span></button>
         <button class="rail-item" data-view="agents"><span class="label">Agents</span></button>
         <button class="rail-item" data-view="activity"><span class="label">Activity</span></button>
         <div class="rail-spacer"></div>
@@ -27,6 +28,7 @@
 
       <main class="content">
         <section id="view-command" class="view"></section>
+        <section id="view-workstreams" class="view hidden"></section>
         <section id="view-agents" class="view hidden"></section>
         <section id="view-activity" class="view hidden"></section>
       </main>
@@ -43,6 +45,12 @@
 
       <label>Role
         <input type="text" name="role" placeholder="e.g. System design and planning" />
+      </label>
+
+      <label>Workstream
+        <select name="workstreamId" id="workstream-select">
+          <option value="">Unassigned</option>
+        </select>
       </label>
 
       <label>Provider
@@ -79,6 +87,42 @@
         <button type="submit" class="btn btn-primary">Save</button>
       </div>
       <p class="modal-error" id="modal-error"></p>
+    </form>
+  </div>
+
+  <div class="modal-overlay hidden" id="workstream-modal-overlay">
+    <form class="modal" id="workstream-form">
+      <h3 id="workstream-modal-title">New Workstream</h3>
+
+      <label>Name
+        <input type="text" name="name" required placeholder="e.g. Authentication" />
+      </label>
+
+      <label>Description
+        <textarea name="description" rows="2" placeholder="What objective does this cover?"></textarea>
+      </label>
+
+      <label>Owner
+        <input type="text" name="owner" placeholder="Optional" />
+      </label>
+
+      <label>Status
+        <div class="segmented" id="status-segmented" role="tablist">
+          <button type="button" data-status="">Auto</button>
+          <button type="button" data-status="Planning" class="active">Planning</button>
+          <button type="button" data-status="Active">Active</button>
+          <button type="button" data-status="Blocked">Blocked</button>
+          <button type="button" data-status="Review">Review</button>
+          <button type="button" data-status="Completed">Completed</button>
+        </div>
+        <input type="hidden" name="statusOverride" id="status-override-input" value="" />
+      </label>
+
+      <div class="modal-actions">
+        <button type="button" class="btn" id="workstream-modal-cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+      <p class="modal-error" id="workstream-modal-error"></p>
     </form>
   </div>
 
