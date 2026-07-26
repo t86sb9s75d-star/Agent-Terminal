@@ -240,22 +240,58 @@
       'run.completed': `${name} completed a run`,
       'run.cancelled': `${name}'s run was stopped`,
       'run.failed': `${name}'s run failed`,
+      'run.timed_out': `${name}'s run was stopped for exceeding its runtime limit`,
       'run.stop_requested': `Stop requested for ${name}`,
       'agent.created': `${name} was registered`,
       'agent.updated': `${name} was updated`,
       'agent.deleted': `${name} was deleted`,
+      'agent.workstream_changed': `${name} was moved between workstreams`,
+      'workstream.created': `Workstream "${name}" was created`,
+      'workstream.updated': `Workstream "${name}" was updated`,
+      'workstream.archived': `Workstream "${name}" was archived`,
+      'workstream.unarchived': `Workstream "${name}" was unarchived`,
+      'workstream.incident_resolved': `An incident in "${name}" was resolved`,
       'registry.external_modification_detected': 'Agent registry was modified outside the API',
+      'runs.recovered_after_restart': 'Runs left in progress by an unclean shutdown were recovered',
     };
-    return map[evt.action] || `${evt.action} — ${name}`;
+    if (map[evt.action]) return map[evt.action];
+    if (evt.action.endsWith('.tamper_detected')) return `${evt.entityId} was modified outside the application`;
+    if (evt.action.endsWith('.corrupt_no_backup')) return `${evt.entityId} is corrupt and has no valid backup — operator recovery required`;
+    if (evt.action.endsWith('.recovered_from_backup')) return `${evt.entityId} was restored from its last known-good backup`;
+    if (evt.action.endsWith('.backup_write_failed')) return `${evt.entityId} backup could not be written`;
+    return `${evt.action} — ${name}`;
   }
 
   function eventCategory(action) {
-    if (action === 'agent.created' || action === 'agent.updated' || action === 'agent.deleted') return 'changes';
+    if (action.startsWith('agent.') || action.startsWith('workstream.')) return 'changes';
     if (action === 'run.completed') return 'completed';
-    if (action === 'run.failed') return 'failed';
+    if (action === 'run.failed' || action === 'run.timed_out') return 'failed';
     if (action === 'run.cancelled') return 'cancelled';
-    if (action === 'registry.external_modification_detected') return 'integrity';
+    if (action === 'registry.external_modification_detected' || action === 'runs.recovered_after_restart') return 'integrity';
+    if (/\.(tamper_detected|corrupt_no_backup|recovered_from_backup|backup_write_failed|unsupported_schema)$/.test(action)) return 'integrity';
     return 'runs';
+  }
+
+  // Phase 5.3 — actors are now a structured object, not a flat string.
+  // Renders a short, human-readable label; falls back gracefully for any
+  // pre-migration event still holding the old string shape.
+  const ACTOR_TYPE_LABELS = {
+    human_operator: 'Operator',
+    system: 'System',
+    system_recovery: 'Recovery',
+    scheduler: 'Scheduler',
+    policy_engine: 'Policy',
+    agent: 'Agent',
+    security_monitor: 'Sentinel',
+    api_client: 'API client',
+    migration: 'Migration',
+  };
+  function actorLabel(actor) {
+    if (typeof actor === 'string') return actor; // legacy shape, pre-migration
+    if (!actor || typeof actor !== 'object') return 'System';
+    const base = ACTOR_TYPE_LABELS[actor.actorType] || actor.actorType || 'System';
+    if (actor.actorType === 'api_client' && actor.actorId) return `${base} (${actor.actorId})`;
+    return base;
   }
 
   // Groups the same real events used elsewhere (humanizeEvent) into a short,
@@ -937,7 +973,7 @@
         <div class="activity-row-summary">
           <span class="time">${fmtDateTime(e.ts)}</span>
           <span class="flag-marker"></span>
-          <span class="desc"><strong>${escapeHtml(e.actor)}</strong> — ${escapeHtml(humanizeEvent(e))}</span>
+          <span class="desc"><strong>${escapeHtml(actorLabel(e.actor))}</strong> — ${escapeHtml(humanizeEvent(e))}</span>
           <span class="chevron">›</span>
         </div>
         <div class="activity-row-detail">
