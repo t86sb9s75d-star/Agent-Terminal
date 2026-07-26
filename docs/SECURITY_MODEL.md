@@ -157,10 +157,10 @@ request body. Reusing the same key with a genuinely different payload (a
 stale key from a previous form, a UUID collision, a client bug) silently
 returned the FIRST request's response — the client would see a
 successful 201 and believe its own (different) payload had been applied,
-when nothing about that payload was actually processed. The cache key
-now includes a hash of the request body; reusing a key with a different
-payload returns a clean `409 IDEMPOTENCY_CONFLICT` instead. Verified live
-and via `test/integration.test.js`.
+when nothing about that payload was actually processed. Each cached entry
+now also stores a hash of the request body, checked on reuse; reusing a
+key with a different payload returns a clean `409 IDEMPOTENCY_CONFLICT`
+instead. Verified live and via `test/integration.test.js`.
 
 ## Explicitly accepted, not fixed: shell injection via `custom` agents
 

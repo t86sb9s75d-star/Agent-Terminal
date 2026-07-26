@@ -11,16 +11,17 @@
 // cross-process coordination a persisted idempotency store would need, and
 // this system is single-instance by design (see instanceLock.js).
 //
-// The cache key is scoped to (method, path, key, payload hash) — not just
-// (method, path, key). Without the payload hash, a client that reused an
-// Idempotency-Key value with a genuinely DIFFERENT body (a stale key
-// left over from a previous form, a UUID collision, a client bug) would
-// silently get back the FIRST request's response instead of either
-// executing the new request or being told the key was reused incompatibly
-// — a real correctness hazard, not just a missed optimization: the client
-// would see a 201 and believe ITS payload was what got created. Reusing
-// the same key with the SAME payload still replays cleanly; reusing it
-// with a DIFFERENT payload is now a clear 409 IDEMPOTENCY_CONFLICT.
+// Each cache entry is keyed by (method, path, key); the request's payload
+// hash is stored on that entry and checked on lookup, not folded into the
+// key itself. Without that check, a client that reused an Idempotency-Key
+// value with a genuinely DIFFERENT body (a stale key left over from a
+// previous form, a UUID collision, a client bug) would silently get back
+// the FIRST request's response instead of either executing the new
+// request or being told the key was reused incompatibly — a real
+// correctness hazard, not just a missed optimization: the client would
+// see a 201 and believe ITS payload was what got created. Reusing the
+// same key with the SAME payload still replays cleanly; reusing it with
+// a DIFFERENT payload is now a clear 409 IDEMPOTENCY_CONFLICT.
 
 const crypto = require('crypto');
 const { AppError, Codes } = require('./errors');
