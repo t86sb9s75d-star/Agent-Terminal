@@ -95,8 +95,12 @@ was actually checked:
 against throwaway data directories: 16 from the original safety-foundation
 work plus 6 from the post-merge stabilization pass — the four PR #3 review
 findings, `maxTokens` validation, and idempotency payload-conflict
-detection). **27 unit + 22 integration = 49 tests, all passing** as of the
-final commit on this branch.
+detection). **26 unit + 22 integration = 48 tests, all passing** as of the
+final commit on this branch. (Corrected during a review-reconciliation
+pass: the per-file case counts above — 6 + 5 + 15 = 26 — were always
+right; only the final summed total had carried a stale "27" since the
+original safety-foundation session, propagated forward through several
+doc updates without ever being re-derived from the actual test output.)
 
 Each of the 6 new stabilization tests was confirmed to genuinely catch its
 regression: the corresponding fix was temporarily reverted (`git stash`)
