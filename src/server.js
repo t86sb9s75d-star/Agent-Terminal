@@ -13,6 +13,7 @@ const workstreamsStore = require('./workstreamsStore');
 const runsStore = require('./runsStore');
 const configHistoryStore = require('./configHistoryStore');
 const instanceLock = require('./instanceLock');
+const { idempotencyMiddleware } = require('./idempotency');
 const { AppError, Codes } = require('./errors');
 const { requestIdMiddleware, actorFromRequest, SYSTEM_ACTOR, RECOVERY_ACTOR } = require('./actor');
 
@@ -63,6 +64,7 @@ const app = express();
 app.use(requestIdMiddleware);
 app.use(originCheckMiddleware);
 app.use(express.json());
+app.use(idempotencyMiddleware);
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 const server = http.createServer(app);
