@@ -1,8 +1,14 @@
 node_modules/
 data/agents.json
-data/.agents.hash
 data/runs.json
+data/workstreams.json
+data/config_history.json
+data/security_events.json
 data/events.jsonl
+data/.*.hash.json
+data/.server.lock
+data/backups/
+data/*.corrupt-*
 data/logs/
 .env
 *.log

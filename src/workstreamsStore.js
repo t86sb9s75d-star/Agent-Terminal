@@ -1,34 +1,50 @@
-const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
 const { aggregateCost, executionSuccessRate } = require('./runsStore');
+const { createVersionedStore } = require('./persistence/versionedStore');
+const { AppError, Codes, requireString } = require('./errors');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const WORKSTREAMS_FILE = path.join(DATA_DIR, 'workstreams.json');
+const DATA_DIR = process.env.RUCKER_DATA_DIR || path.join(__dirname, '..', 'data');
+const SCHEMA_VERSION = 1;
 
 // Statuses a human can explicitly set. 'Archived' is not in this list — it's
 // a separate boolean flag (`archived`), not a lifecycle status, so archiving
 // a workstream doesn't collide with whatever status it was last set to.
 const OVERRIDABLE_STATUSES = ['Planning', 'Active', 'Blocked', 'Review', 'Completed'];
 
-function ensureFile() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(WORKSTREAMS_FILE)) fs.writeFileSync(WORKSTREAMS_FILE, '[]', 'utf8');
+let versionedStore = null;
+let registeredOnEvent = null;
+function getStore() {
+  if (!versionedStore) {
+    versionedStore = createVersionedStore({
+      storeName: 'workstreams',
+      filePath: path.join(DATA_DIR, 'workstreams.json'),
+      dataDir: DATA_DIR,
+      schemaVersion: SCHEMA_VERSION,
+      emptyValue: [],
+      onEvent: registeredOnEvent,
+    });
+  }
+  return versionedStore;
+}
+
+function init(onEvent) {
+  registeredOnEvent = onEvent;
+  versionedStore = null;
+  getStore();
 }
 
 function readAll() {
-  ensureFile();
-  try {
-    return JSON.parse(fs.readFileSync(WORKSTREAMS_FILE, 'utf8'));
-  } catch {
-    return [];
+  const { records, state } = getStore().read();
+  if (state === 'corrupt') {
+    throw new AppError(Codes.STORE_DEGRADED, 'workstream registry is degraded (corrupt with no valid backup) — operator recovery required', 503);
   }
+  return records;
 }
 
 function writeAll(workstreams) {
-  ensureFile();
-  fs.writeFileSync(WORKSTREAMS_FILE, JSON.stringify(workstreams, null, 2), 'utf8');
+  getStore().write(workstreams);
 }
 
 function list() {
@@ -39,20 +55,33 @@ function get(id) {
   return readAll().find((w) => w.id === id) || null;
 }
 
+// Phase 6.2 — archive enforcement. Historical visibility and existing
+// attribution are untouched; this only blocks NEW commitments into an
+// archived workstream. Reassignment AWAY from an archived workstream
+// remains allowed (an agent leaving a closed objective is always fine).
+function assertNotArchived(id) {
+  if (!id) return;
+  const ws = get(id);
+  if (ws && ws.archived) {
+    throw new AppError(Codes.WORKSTREAM_ARCHIVED, 'this workstream is archived and cannot accept new agent assignments or runs', 409);
+  }
+}
+
 function create(data) {
-  if (!data.name || !data.name.trim()) throw new Error('name is required');
+  const name = requireString(data.name, 'name');
   if (data.statusOverride && !OVERRIDABLE_STATUSES.includes(data.statusOverride)) {
-    throw new Error(`statusOverride must be one of: ${OVERRIDABLE_STATUSES.join(', ')}`);
+    throw new AppError(Codes.VALIDATION_ERROR, `statusOverride must be one of: ${OVERRIDABLE_STATUSES.join(', ')}`);
   }
   const workstreams = readAll();
   const workstream = {
     id: crypto.randomUUID(),
-    name: data.name.trim(),
-    description: data.description || '',
-    owner: data.owner || '',
+    name,
+    description: typeof data.description === 'string' ? data.description : '',
+    owner: typeof data.owner === 'string' ? data.owner : '',
     color: data.color || null,
     statusOverride: data.statusOverride || null,
     archived: false,
+    resolvedFailureRunIds: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -64,7 +93,7 @@ function create(data) {
 function update(id, data) {
   const workstreams = readAll();
   const idx = workstreams.findIndex((w) => w.id === id);
-  if (idx === -1) throw new Error('workstream not found');
+  if (idx === -1) throw new AppError(Codes.WORKSTREAM_NOT_FOUND, 'workstream not found', 404);
   const existing = workstreams[idx];
 
   let statusOverride = existing.statusOverride;
@@ -74,13 +103,13 @@ function update(id, data) {
     } else if (OVERRIDABLE_STATUSES.includes(data.statusOverride)) {
       statusOverride = data.statusOverride;
     } else {
-      throw new Error(`statusOverride must be one of: ${OVERRIDABLE_STATUSES.join(', ')}`);
+      throw new AppError(Codes.VALIDATION_ERROR, `statusOverride must be one of: ${OVERRIDABLE_STATUSES.join(', ')}`);
     }
   }
 
   const updated = {
     ...existing,
-    name: data.name !== undefined ? data.name.trim() : existing.name,
+    name: data.name !== undefined ? requireString(data.name, 'name') : existing.name,
     description: data.description !== undefined ? data.description : existing.description,
     owner: data.owner !== undefined ? data.owner : existing.owner,
     color: data.color !== undefined ? data.color : existing.color,
@@ -95,10 +124,35 @@ function update(id, data) {
 function setArchived(id, archived) {
   const workstreams = readAll();
   const idx = workstreams.findIndex((w) => w.id === id);
-  if (idx === -1) throw new Error('workstream not found');
+  if (idx === -1) throw new AppError(Codes.WORKSTREAM_NOT_FOUND, 'workstream not found', 404);
   workstreams[idx].archived = archived;
   workstreams[idx].updatedAt = new Date().toISOString();
   writeAll(workstreams);
+  return workstreams[idx];
+}
+
+// Phase 6.3, Option B (documented choice — see docs/ARCHITECTURE.md):
+// a failure stays attached to the WORKSTREAM it happened in, and stays
+// "unresolved" even if the responsible agent is later reassigned away,
+// until an operator explicitly resolves that specific run's incident.
+// (Option A — status auto-clears the moment the agent leaves — was
+// rejected: it lets a real unresolved failure quietly disappear from view
+// just because the agent moved, which is the wrong default for long-term
+// incident accountability.)
+function resolveIncident(workstreamId, runId) {
+  const workstreams = readAll();
+  const idx = workstreams.findIndex((w) => w.id === workstreamId);
+  if (idx === -1) throw new AppError(Codes.WORKSTREAM_NOT_FOUND, 'workstream not found', 404);
+  const existing = workstreams[idx];
+  const resolvedFailureRunIds = existing.resolvedFailureRunIds || [];
+  if (!resolvedFailureRunIds.includes(runId)) {
+    workstreams[idx] = {
+      ...existing,
+      resolvedFailureRunIds: [...resolvedFailureRunIds, runId],
+      updatedAt: new Date().toISOString(),
+    };
+    writeAll(workstreams);
+  }
   return workstreams[idx];
 }
 
@@ -121,10 +175,11 @@ function computeEffectiveStatus(workstream, { agentCount, runningRuns, hasUnreso
 // current workstreamId. This is what makes history permanent: reassigning
 // an agent to a different workstream later does not retroactively change
 // which workstream its past runs belonged to.
-function computeMetrics(workstreamId, { agents, runs }) {
+function computeMetrics(workstreamId, { agents, runs, resolvedFailureRunIds }) {
   const memberAgents = agents.filter((a) => (a.workstreamId || null) === workstreamId);
   const ownRuns = runs.filter((r) => (r.workstreamId || null) === workstreamId);
   const finishedRuns = ownRuns.filter((r) => r.status !== 'running');
+  const resolved = new Set(resolvedFailureRunIds || []);
 
   const agentCount = memberAgents.length;
   const runningRuns = ownRuns.filter((r) => r.status === 'running').length;
@@ -132,14 +187,22 @@ function computeMetrics(workstreamId, { agents, runs }) {
   const failedRuns = ownRuns.filter((r) => r.status === 'error').length;
   const cancelledRuns = ownRuns.filter((r) => r.status === 'cancelled').length;
 
-  // "Unresolved failure": an agent in this workstream whose most recent run
-  // ended in error, with nothing since to supersede it.
-  const hasUnresolvedFailure = memberAgents.some((agent) => {
+  // Option B (see resolveIncident doc comment above): scan every agent that
+  // has EVER run in this workstream's history, not just current members.
+  // A failure is unresolved if it's that agent's most recent run *within
+  // this workstream* and hasn't been explicitly resolved.
+  const agentIdsEverInWorkstream = new Set(ownRuns.map((r) => r.agentId));
+  const unresolvedFailureRunIds = [];
+  for (const agentId of agentIdsEverInWorkstream) {
     const agentRuns = finishedRuns
-      .filter((r) => r.agentId === agent.id)
+      .filter((r) => r.agentId === agentId)
       .sort((a, b) => b.startedAt - a.startedAt);
-    return agentRuns.length > 0 && agentRuns[0].status === 'error';
-  });
+    const latest = agentRuns[0];
+    if (latest && latest.status === 'error' && !resolved.has(latest.id)) {
+      unresolvedFailureRunIds.push(latest.id);
+    }
+  }
+  const hasUnresolvedFailure = unresolvedFailureRunIds.length > 0;
 
   const lastActivity = ownRuns.reduce((max, r) => (r.startedAt > max ? r.startedAt : max), 0) || null;
 
@@ -160,15 +223,25 @@ function computeMetrics(workstreamId, { agents, runs }) {
     progress: null,
     lastActivity,
     hasUnresolvedFailure,
+    unresolvedFailureRunIds,
   };
 }
 
+// Phase 5.2's "explicit operator recovery action" — see versionedStore.recover.
+function recover(resolution) {
+  return getStore().recover(resolution);
+}
+
 module.exports = {
+  init,
   list,
   get,
   create,
   update,
   setArchived,
+  resolveIncident,
+  assertNotArchived,
+  recover,
   computeEffectiveStatus,
   computeMetrics,
   OVERRIDABLE_STATUSES,

@@ -1,6 +1,7 @@
 require('dotenv').config();
 
 const path = require('path');
+const crypto = require('crypto');
 const http = require('http');
 const express = require('express');
 const { WebSocketServer } = require('ws');
@@ -10,9 +11,62 @@ const agentManager = require('./agentManager');
 const eventLog = require('./eventLog');
 const workstreamsStore = require('./workstreamsStore');
 const runsStore = require('./runsStore');
+const configHistoryStore = require('./configHistoryStore');
+const sentinel = require('./sentinel');
+const systemState = require('./systemState');
+const instanceLock = require('./instanceLock');
+const { idempotencyMiddleware } = require('./idempotency');
+const { AppError, Codes } = require('./errors');
+const { requestIdMiddleware, actorFromRequest, SYSTEM_ACTOR, RECOVERY_ACTOR } = require('./actor');
+
+const DATA_DIR = process.env.RUCKER_DATA_DIR || path.join(__dirname, '..', 'data');
+
+// Additional failure mode — refuse to start a second instance against the
+// same data directory; every store here assumes single-process ownership
+// (see src/instanceLock.js). Must happen before anything touches data/.
+try {
+  instanceLock.acquire(DATA_DIR);
+} catch (err) {
+  // eslint-disable-next-line no-console
+  console.error(`[fatal] ${err.message}`);
+  process.exit(1);
+}
+
+const PORT = process.env.PORT || 4173;
+const HOST = process.env.HOST || '127.0.0.1';
+
+// Additional failure mode — CSRF / browser-origin. There is no auth system
+// yet, and this server binds to localhost, but "localhost-only" does NOT
+// mean "safe from the browser": any webpage the operator has open in the
+// same browser can still blind-POST to http://127.0.0.1:PORT — the browser
+// only blocks the attacker's JS from READING the response, not from
+// sending the request in the first place. /start and /stop take no body,
+// so a plain cross-origin `fetch(..., {method:'POST'})` from any tab is a
+// "simple" request needing no CORS preflight and would otherwise reach the
+// server. Rejecting state-changing requests whose Origin header doesn't
+// match this server is a standard, low-cost mitigation that needs no
+// session/token infrastructure. Requests with NO Origin header (curl,
+// server-to-server, the X-Rucker-Client automation convention) are
+// allowed through — browsers reliably send Origin on cross-site
+// state-changing requests, so its absence here means a non-browser caller,
+// not a gap an attacker page can exploit.
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+function allowedOrigins() {
+  return new Set([`http://${HOST}:${PORT}`, `http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`]);
+}
+function originCheckMiddleware(req, res, next) {
+  if (SAFE_METHODS.has(req.method)) return next();
+  const origin = req.get('Origin');
+  if (!origin) return next();
+  if (allowedOrigins().has(origin)) return next();
+  res.status(403).json({ error: 'cross-origin request rejected', code: 'CROSS_ORIGIN_REJECTED', requestId: req.requestId || null });
+}
 
 const app = express();
+app.use(requestIdMiddleware);
+app.use(originCheckMiddleware);
 app.use(express.json());
+app.use(idempotencyMiddleware);
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 const server = http.createServer(app);
@@ -25,13 +79,48 @@ function broadcast(payload) {
   }
 }
 
+// Every store gets the audit emitter wired in at boot, so corruption/tamper
+// events discovered on ANY later read — not just the one-time boot check —
+// are actually recorded, not silently dropped (the previous gap: only
+// agents.json had a boot-time integrity check at all, and even that never
+// reached the audit log for events found after startup). Integrity events
+// specifically are ALSO promoted to a tracked Sentinel finding, not just an
+// audit log line — see sentinel.js.
+function onStoreEvent(event) {
+  eventLog.record(event);
+  const match = /^(.+)\.(tamper_detected|corrupt_no_backup|unsupported_schema)$/.exec(event.action);
+  if (match) sentinel.evaluateIntegrityEvent({ storeName: match[1], reason: match[2], detail: event.details });
+}
+
 eventLog.init(broadcast);
+store.init(onStoreEvent);
+runsStore.init(onStoreEvent);
+workstreamsStore.init(onStoreEvent);
+sentinel.init({ onEvent: onStoreEvent, eventLogRecord: eventLog.record });
 agentManager.init(broadcast);
+
+// Phase 3.5 — resolve any run left `running` by a previous process that
+// didn't shut down cleanly (crash, kill, host reboot), before anything else
+// touches run state. Left unresolved, these would sit as permanently
+// "active" forever and never appear in any success/failure accounting.
+const INSTANCE_ID = crypto.randomUUID();
+const recovery = runsStore.recoverInterruptedRuns({ actor: RECOVERY_ACTOR, instanceId: INSTANCE_ID });
+if (recovery.recoveredCount > 0) {
+  eventLog.record({
+    actor: RECOVERY_ACTOR,
+    action: 'runs.recovered_after_restart',
+    entityType: 'system',
+    entityId: 'runs',
+    details: { recoveredCount: recovery.recoveredCount, runs: recovery.recovered, instanceId: INSTANCE_ID },
+    flagged: true,
+    flagReason: `${recovery.recoveredCount} run(s) were still marked running at boot — likely an unclean previous shutdown`,
+  });
+}
 
 const integrity = store.checkIntegrity();
 if (integrity.tampered) {
   eventLog.record({
-    actor: 'system',
+    actor: SYSTEM_ACTOR,
     action: 'registry.external_modification_detected',
     entityType: 'system',
     entityId: 'agents.json',
@@ -39,6 +128,25 @@ if (integrity.tampered) {
     flagged: true,
     flagReason: 'modified outside the system',
   });
+}
+
+// Stable error responses (Phase 8.1) — an AppError's code/status are trusted
+// and returned as-is; anything else is an unexpected internal error and is
+// deliberately NOT leaked to the client (raw JS exception messages can
+// reveal file paths, stack internals, etc.) — only logged server-side.
+function sendError(res, err, req) {
+  if (err instanceof AppError) {
+    return res.status(err.status).json({ error: err.message, code: err.code, requestId: req?.requestId || null });
+  }
+  // body-parser rejects malformed JSON before any route handler runs —
+  // that's a client error (400), not a server error, even though it
+  // isn't an AppError this code raised itself.
+  if (err && err.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: 'request body is not valid JSON', code: Codes.VALIDATION_ERROR, requestId: req?.requestId || null });
+  }
+  // eslint-disable-next-line no-console
+  console.error('[unhandled]', err);
+  return res.status(500).json({ error: 'internal server error', code: 'INTERNAL_ERROR', requestId: req?.requestId || null });
 }
 
 wss.on('connection', (ws) => {
@@ -82,7 +190,7 @@ app.get('/api/workstreams', (req, res) => {
 
 app.get('/api/workstreams/:id', (req, res) => {
   const ws = workstreamsStore.get(req.params.id);
-  if (!ws) return res.status(404).json({ error: 'workstream not found' });
+  if (!ws) return sendError(res, new AppError(Codes.WORKSTREAM_NOT_FOUND, 'workstream not found', 404), req);
   const agents = store.list();
   const runs = runsStore.listAll();
   res.json(decorateWorkstream(ws, agents, runs));
@@ -92,7 +200,7 @@ app.post('/api/workstreams', (req, res) => {
   try {
     const ws = workstreamsStore.create(req.body || {});
     eventLog.record({
-      actor: 'operator',
+      actor: actorFromRequest(req),
       action: 'workstream.created',
       entityType: 'workstream',
       entityId: ws.id,
@@ -100,7 +208,7 @@ app.post('/api/workstreams', (req, res) => {
     });
     res.status(201).json(ws);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    sendError(res, err, req);
   }
 });
 
@@ -108,7 +216,7 @@ app.put('/api/workstreams/:id', (req, res) => {
   try {
     const ws = workstreamsStore.update(req.params.id, req.body || {});
     eventLog.record({
-      actor: 'operator',
+      actor: actorFromRequest(req),
       action: 'workstream.updated',
       entityType: 'workstream',
       entityId: ws.id,
@@ -116,7 +224,7 @@ app.put('/api/workstreams/:id', (req, res) => {
     });
     res.json(ws);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    sendError(res, err, req);
   }
 });
 
@@ -124,12 +232,12 @@ app.post('/api/workstreams/:id/archive', (req, res) => {
   try {
     const ws = workstreamsStore.setArchived(req.params.id, true);
     eventLog.record({
-      actor: 'operator', action: 'workstream.archived', entityType: 'workstream', entityId: ws.id,
+      actor: actorFromRequest(req), action: 'workstream.archived', entityType: 'workstream', entityId: ws.id,
       details: { name: ws.name },
     });
     res.json(ws);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    sendError(res, err, req);
   }
 });
 
@@ -137,12 +245,28 @@ app.post('/api/workstreams/:id/unarchive', (req, res) => {
   try {
     const ws = workstreamsStore.setArchived(req.params.id, false);
     eventLog.record({
-      actor: 'operator', action: 'workstream.unarchived', entityType: 'workstream', entityId: ws.id,
+      actor: actorFromRequest(req), action: 'workstream.unarchived', entityType: 'workstream', entityId: ws.id,
       details: { name: ws.name },
     });
     res.json(ws);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    sendError(res, err, req);
+  }
+});
+
+app.post('/api/workstreams/:id/resolve/:runId', (req, res) => {
+  try {
+    const ws = workstreamsStore.resolveIncident(req.params.id, req.params.runId);
+    eventLog.record({
+      actor: actorFromRequest(req),
+      action: 'workstream.incident_resolved',
+      entityType: 'workstream',
+      entityId: ws.id,
+      details: { name: ws.name, runId: req.params.runId },
+    });
+    res.json(ws);
+  } catch (err) {
+    sendError(res, err, req);
   }
 });
 
@@ -163,41 +287,43 @@ app.get('/api/agents', (req, res) => {
 
 app.get('/api/agents/:id', (req, res) => {
   const agent = store.get(req.params.id);
-  if (!agent) return res.status(404).json({ error: 'agent not found' });
+  if (!agent) return sendError(res, new AppError(Codes.AGENT_NOT_FOUND, 'agent not found', 404), req);
   const runSummary = agentManager.getAgentRuns(agent.id).summary;
   res.json(withWorkstreamName({ ...agent, status: agentManager.getStatus(agent.id), ...runSummary }));
 });
 
 app.get('/api/agents/:id/runs', (req, res) => {
-  if (!store.get(req.params.id)) return res.status(404).json({ error: 'agent not found' });
+  if (!store.get(req.params.id)) return sendError(res, new AppError(Codes.AGENT_NOT_FOUND, 'agent not found', 404), req);
   res.json(agentManager.getAgentRuns(req.params.id));
 });
 
 app.post('/api/agents', (req, res) => {
   try {
     const agent = store.create(req.body || {});
+    const actor = actorFromRequest(req);
     eventLog.record({
-      actor: 'operator',
+      actor,
       action: 'agent.created',
       entityType: 'agent',
       entityId: agent.id,
       details: { name: agent.name, provider: agent.provider },
     });
+    configHistoryStore.record({ agentId: agent.id, action: 'created', actor, before: null, after: agent }, eventLog.record);
     res.status(201).json(agent);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    sendError(res, err, req);
   }
 });
 
 app.put('/api/agents/:id', (req, res) => {
   try {
     if (agentManager.getStatus(req.params.id) === 'running') {
-      return res.status(409).json({ error: 'stop the agent before editing it' });
+      throw new AppError(Codes.VALIDATION_ERROR, 'stop the agent before editing it', 409);
     }
-    const before = store.get(req.params.id);
-    const agent = store.update(req.params.id, req.body || {});
+    const { before, after: agent } = store.update(req.params.id, req.body || {});
+    const actor = actorFromRequest(req);
     eventLog.record({
-      actor: 'operator',
+      actor,
       action: 'agent.updated',
       entityType: 'agent',
       entityId: agent.id,
@@ -207,7 +333,7 @@ app.put('/api/agents/:id', (req, res) => {
       const fromWs = before.workstreamId ? workstreamsStore.get(before.workstreamId) : null;
       const toWs = agent.workstreamId ? workstreamsStore.get(agent.workstreamId) : null;
       eventLog.record({
-        actor: 'operator',
+        actor,
         action: 'agent.workstream_changed',
         entityType: 'agent',
         entityId: agent.id,
@@ -220,57 +346,175 @@ app.put('/api/agents/:id', (req, res) => {
         },
       });
     }
+    configHistoryStore.record({ agentId: agent.id, action: 'updated', actor, before, after: agent }, eventLog.record);
     res.json(withWorkstreamName(agent));
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    sendError(res, err, req);
   }
 });
 
 app.delete('/api/agents/:id', (req, res) => {
   try {
     const agent = store.get(req.params.id);
+    if (!agent) throw new AppError(Codes.AGENT_NOT_FOUND, 'agent not found', 404);
     agentManager.discard(req.params.id);
     store.remove(req.params.id);
+    const actor = actorFromRequest(req);
     eventLog.record({
-      actor: 'operator',
+      actor,
       action: 'agent.deleted',
       entityType: 'agent',
       entityId: req.params.id,
       details: { name: agent?.name },
     });
+    if (agent) configHistoryStore.record({ agentId: agent.id, action: 'deleted', actor, before: agent, after: null }, eventLog.record);
     res.status(204).end();
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    sendError(res, err, req);
   }
+});
+
+app.get('/api/agents/:id/config-history', (req, res) => {
+  if (!store.get(req.params.id)) return sendError(res, new AppError(Codes.AGENT_NOT_FOUND, 'agent not found', 404), req);
+  res.json(configHistoryStore.listForAgent(req.params.id, eventLog.record));
 });
 
 // --- Lifecycle ---
 app.post('/api/agents/:id/start', async (req, res) => {
   try {
-    if (!store.get(req.params.id)) return res.status(404).json({ error: 'agent not found' });
-    await agentManager.start(req.params.id);
+    if (!store.get(req.params.id)) throw new AppError(Codes.AGENT_NOT_FOUND, 'agent not found', 404);
+    await agentManager.start(req.params.id, actorFromRequest(req));
     res.status(202).json({ status: agentManager.getStatus(req.params.id) });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    sendError(res, err, req);
   }
 });
 
-app.post('/api/agents/:id/stop', (req, res) => {
+app.post('/api/agents/:id/stop', async (req, res) => {
   try {
-    agentManager.stop(req.params.id);
+    await agentManager.stop(req.params.id, actorFromRequest(req));
     res.status(202).json({ status: agentManager.getStatus(req.params.id) });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    sendError(res, err, req);
   }
 });
 
 app.get('/api/agents/:id/logs', (req, res) => {
-  if (!store.get(req.params.id)) return res.status(404).json({ error: 'agent not found' });
+  if (!store.get(req.params.id)) return sendError(res, new AppError(Codes.AGENT_NOT_FOUND, 'agent not found', 404), req);
   res.type('text/plain').send(agentManager.getLogs(req.params.id));
 });
 
-const PORT = process.env.PORT || 4173;
-const HOST = process.env.HOST || '127.0.0.1';
+// --- Security (Sentinel, Phase 7 scoped) ---
+app.get('/api/security/status', (req, res) => {
+  res.json({ healthy: systemState.isSystemHealthy(), degraded: systemState.listDegraded() });
+});
+
+app.get('/api/security/findings', (req, res) => {
+  res.json(sentinel.list({ status: req.query.status || null }));
+});
+
+app.get('/api/security/findings/:id', (req, res) => {
+  const finding = sentinel.get(req.params.id);
+  if (!finding) return sendError(res, new AppError(Codes.NOT_FOUND, 'security finding not found', 404), req);
+  res.json(finding);
+});
+
+app.post('/api/security/findings/:id/acknowledge', (req, res) => {
+  try {
+    const finding = sentinel.transition(req.params.id, { status: 'acknowledged', actor: actorFromRequest(req), note: req.body?.note });
+    res.json(finding);
+  } catch (err) {
+    sendError(res, err, req);
+  }
+});
+
+// Containment is ALWAYS operator-initiated (see sentinel.js module comment
+// — Sentinel proposes via suggestedAction, never acts on its own). Stopping
+// the implicated agent is an explicit opt-in (`stopAgent: true`), not a
+// side effect of marking a finding contained, so an operator can record
+// "I've contained this" without that silently also killing a run they
+// didn't ask to stop.
+app.post('/api/security/findings/:id/contain', async (req, res) => {
+  try {
+    const finding = sentinel.get(req.params.id);
+    if (!finding) throw new AppError(Codes.NOT_FOUND, 'security finding not found', 404);
+    const actor = actorFromRequest(req);
+    let stoppedAgent = false;
+    if (req.body?.stopAgent === true && finding.entityType === 'agent') {
+      if (agentManager.getStatus(finding.entityId) === 'running') {
+        await agentManager.stop(finding.entityId, actor);
+        stoppedAgent = true;
+      }
+    }
+    const updated = sentinel.transition(req.params.id, { status: 'contained', actor, note: req.body?.note });
+    res.json({ ...updated, stoppedAgent });
+  } catch (err) {
+    sendError(res, err, req);
+  }
+});
+
+app.post('/api/security/findings/:id/resolve', (req, res) => {
+  try {
+    const finding = sentinel.transition(req.params.id, { status: 'resolved', actor: actorFromRequest(req), note: req.body?.note });
+    res.json(finding);
+  } catch (err) {
+    sendError(res, err, req);
+  }
+});
+
+// Phase 5.2's "explicit operator recovery action," finally reachable from
+// the outside — every store built on createVersionedStore has a recover()
+// that was previously only callable from a one-off script. 'accept_current'
+// means the operator has reviewed the current on-disk content and confirms
+// it as the new known-good baseline (used after a legitimate external edit
+// was flagged as tampering); 'restore_backup' discards the current file and
+// restores the newest valid backup. Neither happens automatically — see
+// versionedStore.js and docs/PERSISTENCE_AND_RECOVERY.md.
+const RECOVERABLE_STORES = {
+  agents: (resolution) => store.recover(resolution),
+  runs: (resolution) => runsStore.recover(resolution),
+  workstreams: (resolution) => workstreamsStore.recover(resolution),
+  security_events: (resolution) => sentinel.recover(resolution),
+  config_history: (resolution) => configHistoryStore.recover(resolution, eventLog.record),
+};
+
+app.post('/api/security/stores/:storeName/recover', (req, res) => {
+  try {
+    const handler = RECOVERABLE_STORES[req.params.storeName];
+    if (!handler) throw new AppError(Codes.NOT_FOUND, 'unknown or non-recoverable store name', 404);
+    const resolution = req.body?.resolution;
+    if (resolution !== 'accept_current' && resolution !== 'restore_backup') {
+      throw new AppError(Codes.VALIDATION_ERROR, 'resolution must be "accept_current" or "restore_backup"');
+    }
+    const result = handler(resolution);
+    const actor = actorFromRequest(req);
+    eventLog.record({
+      actor,
+      action: 'store.recovery_performed',
+      entityType: 'system',
+      entityId: req.params.storeName,
+      details: { resolution, recordCount: Array.isArray(result.records) ? result.records.length : null },
+      flagged: true,
+      flagReason: `operator performed "${resolution}" recovery on ${req.params.storeName}`,
+    });
+    res.json({ storeName: req.params.storeName, resolution, recordCount: Array.isArray(result.records) ? result.records.length : null });
+  } catch (err) {
+    sendError(res, err, req);
+  }
+});
+
+// Global error handler — catches anything that reaches here without going
+// through a route's own try/catch, most notably body-parser rejecting
+// malformed JSON before a route handler ever runs. Express's own default
+// handler would otherwise return an HTML page with a full stack trace
+// (file paths, line numbers, internal module names) — the exact kind of
+// leak Phase 8's stable error codes exist to prevent everywhere else.
+// Must be registered after every route (Express dispatches to the first
+// 4-arg middleware when next(err) is called or a synchronous handler throws).
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  sendError(res, err, req);
+});
 
 server.listen(PORT, HOST, () => {
   console.log(`Rucker Park running at http://${HOST}:${PORT}`);

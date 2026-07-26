@@ -1,10 +1,18 @@
 const Anthropic = require('@anthropic-ai/sdk');
 
+// Phase 4.5 — a dedicated, shorter network-level timeout for the provider
+// call itself, distinct from the operator-facing runtime ceiling enforced
+// in agentManager.js. That ceiling bounds the whole run (and is meant to be
+// tunable per-agent for long tasks); this bounds a single stalled
+// connection to the provider, which should never legitimately take this
+// long regardless of what the agent's task is.
+const PROVIDER_TIMEOUT_MS = Number(process.env.RUCKER_PROVIDER_TIMEOUT_MS) || 5 * 60 * 1000; // 5 min
+
 async function runAnthropic({ agent, onLog, signal }) {
   if (!process.env.ANTHROPIC_API_KEY) {
     throw new Error('ANTHROPIC_API_KEY is not set on the server');
   }
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, timeout: PROVIDER_TIMEOUT_MS });
   const model = agent.model || 'claude-sonnet-5';
 
   const stream = client.messages.stream(
@@ -14,7 +22,7 @@ async function runAnthropic({ agent, onLog, signal }) {
       system: agent.systemPrompt || undefined,
       messages: [{ role: 'user', content: agent.task }],
     },
-    { signal }
+    { signal, timeout: PROVIDER_TIMEOUT_MS }
   );
 
   stream.on('text', (text) => onLog(text));
