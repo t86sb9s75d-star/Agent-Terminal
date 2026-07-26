@@ -410,6 +410,55 @@ async function run() {
     }
   });
 
+  await check('10 truly concurrent start requests for one agent produce exactly one run', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const agent = await (await fetch(`${server.baseUrl}/api/agents`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Race Test', provider: 'custom', command: 'sleep 2' }),
+      })).json();
+
+      const results = await Promise.all(
+        Array.from({ length: 10 }, () => fetch(`${server.baseUrl}/api/agents/${agent.id}/start`, { method: 'POST' }))
+      );
+      const statuses = results.map((r) => r.status).sort();
+      assert.strictEqual(statuses.filter((s) => s === 202).length, 1, 'exactly one request should succeed');
+      assert.strictEqual(statuses.filter((s) => s === 409).length, 9, 'the other nine should be rejected as already-running');
+
+      await new Promise((r) => setTimeout(r, 2500));
+      const runsRes = await (await fetch(`${server.baseUrl}/api/agents/${agent.id}/runs`)).json();
+      assert.strictEqual(runsRes.runs.length, 1, 'exactly one run should have been created despite the race');
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('malformed JSON returns a stable error shape, not a leaked stack trace', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const res = await fetch(`${server.baseUrl}/api/agents`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{not valid json',
+      });
+      assert.strictEqual(res.status, 400);
+      const body = await res.json();
+      assert.strictEqual(body.code, 'VALIDATION_ERROR');
+      assert.ok(!body.error.includes('/src/'), 'error message must not leak a filesystem path');
+      assert.ok(!body.error.includes('at '), 'error message must not leak a stack trace');
+
+      // server must still be healthy afterward
+      const health = await fetch(`${server.baseUrl}/api/providers`);
+      assert.strictEqual(health.status, 200);
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   await check('a run exceeding the runtime ceiling is terminated and marked timed_out', async () => {
     const dataDir = freshDataDir();
     const server = startServer(dataDir, { RUCKER_DEFAULT_RUNTIME_TIMEOUT_MS: '1000' });

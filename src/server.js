@@ -138,6 +138,12 @@ function sendError(res, err, req) {
   if (err instanceof AppError) {
     return res.status(err.status).json({ error: err.message, code: err.code, requestId: req?.requestId || null });
   }
+  // body-parser rejects malformed JSON before any route handler runs —
+  // that's a client error (400), not a server error, even though it
+  // isn't an AppError this code raised itself.
+  if (err && err.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: 'request body is not valid JSON', code: Codes.VALIDATION_ERROR, requestId: req?.requestId || null });
+  }
   // eslint-disable-next-line no-console
   console.error('[unhandled]', err);
   return res.status(500).json({ error: 'internal server error', code: 'INTERNAL_ERROR', requestId: req?.requestId || null });
@@ -495,6 +501,19 @@ app.post('/api/security/stores/:storeName/recover', (req, res) => {
   } catch (err) {
     sendError(res, err, req);
   }
+});
+
+// Global error handler — catches anything that reaches here without going
+// through a route's own try/catch, most notably body-parser rejecting
+// malformed JSON before a route handler ever runs. Express's own default
+// handler would otherwise return an HTML page with a full stack trace
+// (file paths, line numbers, internal module names) — the exact kind of
+// leak Phase 8's stable error codes exist to prevent everywhere else.
+// Must be registered after every route (Express dispatches to the first
+// 4-arg middleware when next(err) is called or a synchronous handler throws).
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  sendError(res, err, req);
 });
 
 server.listen(PORT, HOST, () => {
