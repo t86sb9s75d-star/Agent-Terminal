@@ -184,4 +184,9 @@ function remove(id) {
   return existing;
 }
 
-module.exports = { init, list, get, create, update, remove, checkIntegrity, VALID_PROVIDERS };
+// Phase 5.2's "explicit operator recovery action" — see versionedStore.recover.
+function recover(resolution) {
+  return getStore(registeredOnEvent).recover(resolution);
+}
+
+module.exports = { init, list, get, create, update, remove, checkIntegrity, recover, VALID_PROVIDERS };

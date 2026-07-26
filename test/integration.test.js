@@ -282,6 +282,62 @@ async function run() {
     }
   });
 
+  await check('operator recovery (restore_backup and accept_current) clears a tampered store', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      await fetch(`${server.baseUrl}/api/agents`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Recovery Test', provider: 'custom', command: 'echo hi' }),
+      });
+
+      const filePath = path.join(dataDir, 'agents.json');
+      const tamper = (name) => {
+        const envelope = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        envelope.records[0].name = name;
+        fs.writeFileSync(filePath, JSON.stringify(envelope, null, 2));
+      };
+
+      tamper('TAMPERED');
+      await fetch(`${server.baseUrl}/api/agents`); // trigger detection
+      let status = await (await fetch(`${server.baseUrl}/api/security/status`)).json();
+      assert.strictEqual(status.healthy, false);
+
+      const restoreRes = await fetch(`${server.baseUrl}/api/security/stores/agents/recover`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ resolution: 'restore_backup' }),
+      });
+      assert.strictEqual(restoreRes.status, 200);
+      status = await (await fetch(`${server.baseUrl}/api/security/status`)).json();
+      assert.strictEqual(status.healthy, true);
+      const afterRestore = await (await fetch(`${server.baseUrl}/api/agents`)).json();
+      assert.strictEqual(afterRestore[0].name, 'Recovery Test', 'restore_backup should discard the tampered content');
+
+      tamper('DELIBERATE EDIT');
+      await fetch(`${server.baseUrl}/api/agents`);
+      const acceptRes = await fetch(`${server.baseUrl}/api/security/stores/agents/recover`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ resolution: 'accept_current' }),
+      });
+      assert.strictEqual(acceptRes.status, 200);
+      const afterAccept = await (await fetch(`${server.baseUrl}/api/agents`)).json();
+      assert.strictEqual(afterAccept[0].name, 'DELIBERATE EDIT', 'accept_current should keep the current on-disk content as the new baseline');
+      status = await (await fetch(`${server.baseUrl}/api/security/status`)).json();
+      assert.strictEqual(status.healthy, true);
+
+      const badStore = await fetch(`${server.baseUrl}/api/security/stores/nonexistent/recover`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ resolution: 'accept_current' }),
+      });
+      assert.strictEqual(badStore.status, 404);
+      const badResolution = await fetch(`${server.baseUrl}/api/security/stores/agents/recover`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ resolution: 'yolo' }),
+      });
+      assert.strictEqual(badResolution.status, 400);
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   await check('a second instance against the same data directory is refused', async () => {
     const dataDir = freshDataDir();
     const server1 = startServer(dataDir);

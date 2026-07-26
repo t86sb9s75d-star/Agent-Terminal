@@ -72,4 +72,9 @@ function listForAgent(agentId, onEvent) {
   return (records || []).filter((r) => r.agentId === agentId).sort((a, b) => b.ts.localeCompare(a.ts));
 }
 
-module.exports = { record, listForAgent, TRACKED_FIELDS };
+// Phase 5.2's "explicit operator recovery action" — see versionedStore.recover.
+function recover(resolution, onEvent) {
+  return getStore(onEvent).recover(resolution);
+}
+
+module.exports = { record, listForAgent, recover, TRACKED_FIELDS };

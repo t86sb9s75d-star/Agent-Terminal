@@ -224,11 +224,19 @@ function summarizeForAgent(agentId) {
   };
 }
 
+// Phase 5.2's "explicit operator recovery action" — see versionedStore.recover.
+// Distinct from recoverInterruptedRuns above: this is for the STORE FILE
+// being corrupt/tampered, not for individual runs left mid-execution.
+function recover(resolution) {
+  return getStore().recover(resolution);
+}
+
 module.exports = {
   init,
   startRun,
   finishRun,
   recoverInterruptedRuns,
+  recover,
   listForAgent,
   listAll,
   summarize,

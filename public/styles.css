@@ -796,13 +796,15 @@ button { font-family: inherit; font-size: inherit; color: inherit; }
    reveal interaction here, unlike Activity rows, so the shared
    .activity-row-detail's collapsed-by-default / height-capped styling
    (meant for short key-value summaries) is overridden for this list. */
-#security-list .activity-row-detail {
+#security-list .activity-row-detail,
+#degraded-stores .activity-row-detail {
   display: block;
   max-height: none;
   overflow: visible;
   opacity: 1;
 }
-#security-list .activity-row-summary { cursor: default; }
+#security-list .activity-row-summary,
+#degraded-stores .activity-row-summary { cursor: default; }
 
 /* ============================================================
    Modal / Confirm dialog

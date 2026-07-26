@@ -1041,11 +1041,24 @@
       <div class="security-health ${healthy ? 'ok' : 'bad'}">
         <span class="status ${healthy ? 'status-completed' : 'status-error'}">${healthy ? 'Healthy' : 'Degraded'}</span>
         <span class="security-health-note">
-          ${healthy
-            ? 'All stores pass integrity checks.'
-            : degraded.map((d) => `${escapeHtml(d.subsystem)}: ${escapeHtml(d.reason)}`).join(' · ')}
+          ${healthy ? 'All stores pass integrity checks.' : ''}
         </span>
       </div>
+      ${!healthy ? `<div id="degraded-stores">${degraded.map((d) => `
+        <div class="activity-row flagged">
+          <div class="activity-row-summary">
+            <span class="time"></span>
+            <span class="flag-marker"></span>
+            <span class="desc"><strong>${escapeHtml(d.subsystem)}</strong> — ${escapeHtml(d.reason)}${d.since ? ` since ${fmtDateTime(new Date(d.since).getTime())}` : ''}</span>
+          </div>
+          <div class="activity-row-detail">
+            ${DataRow('Detail', `<pre style="white-space:pre-wrap;font-size:11px;margin:0;">${escapeHtml(JSON.stringify(d.detail, null, 2))}</pre>`)}
+            <div class="security-actions">
+              <button type="button" class="btn" data-recover="restore_backup" data-store="${escapeHtml(d.subsystem)}">Restore last known-good backup</button>
+              <button type="button" class="btn btn-danger" data-recover="accept_current" data-store="${escapeHtml(d.subsystem)}">Accept current file as-is</button>
+            </div>
+          </div>
+        </div>`).join('')}</div>` : ''}
       <div class="activity-toolbar segmented" id="security-filter">
         ${SECURITY_FILTERS.map((f) => `<button type="button" data-filter="${f.key}" class="${f.key === state.securityFilter ? 'active' : ''}">${f.label}</button>`).join('')}
       </div>
@@ -1060,7 +1073,28 @@
         renderSecurityList();
       });
     });
+    document.querySelectorAll('[data-recover]').forEach((btn) => {
+      btn.addEventListener('click', () => handleRecoverStore(btn));
+    });
     renderSecurityList();
+  }
+
+  async function handleRecoverStore(btn) {
+    const { recover: resolution, store: storeName } = btn.dataset;
+    const confirmMsg = resolution === 'accept_current'
+      ? `Accept the CURRENT on-disk content of "${storeName}" as the new known-good baseline? Only do this if you've reviewed the change and it was intentional.`
+      : `Discard the current "${storeName}" file and restore the last known-good backup? Any changes made since that backup will be lost.`;
+    if (!window.confirm(confirmMsg)) return;
+    try {
+      await api(`/api/security/stores/${encodeURIComponent(storeName)}/recover`, {
+        method: 'POST', body: JSON.stringify({ resolution }),
+      });
+      await loadSecurity();
+      await refreshData();
+      renderSecurity();
+    } catch (err) {
+      window.alert(err.message);
+    }
   }
 
   function renderSecurityList() {

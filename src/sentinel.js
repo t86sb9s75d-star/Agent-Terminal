@@ -226,12 +226,18 @@ async function analyzeWithAi(/* finding */) {
   throw new AppError(Codes.NOT_FOUND, 'AI-assisted analysis is not implemented — Sentinel findings are reviewed by the operator', 501);
 }
 
+// Phase 5.2's "explicit operator recovery action" — see versionedStore.recover.
+function recover(resolution) {
+  return getStore().recover(resolution);
+}
+
 module.exports = {
   init,
   list,
   get,
   createFinding,
   transition,
+  recover,
   evaluateAfterRun,
   evaluateBudgetPressure,
   evaluateIntegrityEvent,

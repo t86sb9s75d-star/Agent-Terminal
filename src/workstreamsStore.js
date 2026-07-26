@@ -227,6 +227,11 @@ function computeMetrics(workstreamId, { agents, runs, resolvedFailureRunIds }) {
   };
 }
 
+// Phase 5.2's "explicit operator recovery action" — see versionedStore.recover.
+function recover(resolution) {
+  return getStore().recover(resolution);
+}
+
 module.exports = {
   init,
   list,
@@ -236,6 +241,7 @@ module.exports = {
   setArchived,
   resolveIncident,
   assertNotArchived,
+  recover,
   computeEffectiveStatus,
   computeMetrics,
   OVERRIDABLE_STATUSES,

@@ -456,6 +456,47 @@ app.post('/api/security/findings/:id/resolve', (req, res) => {
   }
 });
 
+// Phase 5.2's "explicit operator recovery action," finally reachable from
+// the outside — every store built on createVersionedStore has a recover()
+// that was previously only callable from a one-off script. 'accept_current'
+// means the operator has reviewed the current on-disk content and confirms
+// it as the new known-good baseline (used after a legitimate external edit
+// was flagged as tampering); 'restore_backup' discards the current file and
+// restores the newest valid backup. Neither happens automatically — see
+// versionedStore.js and docs/PERSISTENCE_AND_RECOVERY.md.
+const RECOVERABLE_STORES = {
+  agents: (resolution) => store.recover(resolution),
+  runs: (resolution) => runsStore.recover(resolution),
+  workstreams: (resolution) => workstreamsStore.recover(resolution),
+  security_events: (resolution) => sentinel.recover(resolution),
+  config_history: (resolution) => configHistoryStore.recover(resolution, eventLog.record),
+};
+
+app.post('/api/security/stores/:storeName/recover', (req, res) => {
+  try {
+    const handler = RECOVERABLE_STORES[req.params.storeName];
+    if (!handler) throw new AppError(Codes.NOT_FOUND, 'unknown or non-recoverable store name', 404);
+    const resolution = req.body?.resolution;
+    if (resolution !== 'accept_current' && resolution !== 'restore_backup') {
+      throw new AppError(Codes.VALIDATION_ERROR, 'resolution must be "accept_current" or "restore_backup"');
+    }
+    const result = handler(resolution);
+    const actor = actorFromRequest(req);
+    eventLog.record({
+      actor,
+      action: 'store.recovery_performed',
+      entityType: 'system',
+      entityId: req.params.storeName,
+      details: { resolution, recordCount: Array.isArray(result.records) ? result.records.length : null },
+      flagged: true,
+      flagReason: `operator performed "${resolution}" recovery on ${req.params.storeName}`,
+    });
+    res.json({ storeName: req.params.storeName, resolution, recordCount: Array.isArray(result.records) ? result.records.length : null });
+  } catch (err) {
+    sendError(res, err, req);
+  }
+});
+
 server.listen(PORT, HOST, () => {
   console.log(`Rucker Park running at http://${HOST}:${PORT}`);
 });
