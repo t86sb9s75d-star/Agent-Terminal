@@ -176,7 +176,11 @@ app.get('/api/activity', (req, res) => {
 
 // --- Workstreams ---
 function decorateWorkstream(ws, agents, runs) {
-  const metrics = workstreamsStore.computeMetrics(ws.id, { agents, runs });
+  // resolvedFailureRunIds must be passed through — without it, a failure
+  // resolved via POST /:id/resolve/:runId would show as unresolved forever
+  // in every read path, since computeMetrics defaults to treating nothing
+  // as resolved when this is omitted.
+  const metrics = workstreamsStore.computeMetrics(ws.id, { agents, runs, resolvedFailureRunIds: ws.resolvedFailureRunIds });
   const status = workstreamsStore.computeEffectiveStatus(ws, metrics);
   return { ...ws, status, ...metrics };
 }

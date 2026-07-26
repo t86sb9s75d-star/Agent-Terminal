@@ -45,6 +45,16 @@ expects. (This exact bug was caught and fixed during development —
 verified live: create a record, corrupt the file, confirm recovery
 returns the just-created record, not zero records.)
 
+**Post-merge stabilization note**: a PR review later found that
+`backup.js`'s own header comment still described the pre-fix (backwards)
+behavior, even though the actual code had already been corrected — a
+documentation-vs-implementation mismatch, not a behavior regression.
+Re-verified with real files before touching anything (two sequential
+writes, corrupt the primary file, `restore_backup`, confirm the SECOND
+write's content — not the first — comes back) and covered by a dedicated
+`test/integration.test.js` case; the comment was then corrected to match
+the already-correct implementation.
+
 ## Schema versioning
 
 Every snapshot store's envelope is `{schemaVersion, updatedAt, records}`.
