@@ -13,6 +13,7 @@ const { terminateProcessGroup } = runCustom;
 const { SYSTEM_ACTOR, POLICY_ACTOR } = require('./actor');
 const { AppError, Codes } = require('./errors');
 const budget = require('./budget');
+const sentinel = require('./sentinel');
 
 const LOGS_DIR = path.join(__dirname, '..', 'data', 'logs');
 const MAX_BUFFER_LINES = 2000;
@@ -185,6 +186,11 @@ async function start(id, actor = SYSTEM_ACTOR) {
     const costUsd = estimateCostUsd(agent.provider, agent.model, inputTokens, outputTokens);
     const runError = status === 'error' ? err.message : status === 'timed_out' ? `runtime limit exceeded (${maxRuntimeMs}ms)` : null;
 
+    // Phase 4.6 — the per-run cap can't be checked before the call (cost is
+    // only known once usage is reported back), so it's surfaced here as a
+    // flagged policy signal for the operator rather than a pre-flight block.
+    const overCap = budget.exceededPerRunCap(costUsd);
+
     runsStore.finishRun(rt.runId, {
       status,
       inputTokens,
@@ -193,6 +199,7 @@ async function start(id, actor = SYSTEM_ACTOR) {
       costUsd,
       error: runError,
       outputTruncated: rt.outputTruncated,
+      overBudgetCap: overCap,
     });
 
     const actionByStatus = {
@@ -201,11 +208,6 @@ async function start(id, actor = SYSTEM_ACTOR) {
       timed_out: 'run.timed_out',
       error: 'run.failed',
     };
-
-    // Phase 4.6 — the per-run cap can't be checked before the call (cost is
-    // only known once usage is reported back), so it's surfaced here as a
-    // flagged policy signal for the operator rather than a pre-flight block.
-    const overCap = budget.exceededPerRunCap(costUsd);
 
     eventLog.record({
       // A timeout is enforced by the system, not requested by whoever
@@ -228,6 +230,16 @@ async function start(id, actor = SYSTEM_ACTOR) {
       flagged: status === 'error' || status === 'timed_out' || overCap,
       flagReason: status === 'error' ? 'run failed' : status === 'timed_out' ? 'runtime limit exceeded' : overCap ? 'run exceeded the configured per-run spending cap' : null,
     });
+
+    // Phase 7 (scoped) — deterministic Sentinel rules, evaluated right at
+    // the moment their triggering condition could newly be true. A single
+    // failure is just a failure; a burst of them, or repeated cap breaches,
+    // is the pattern worth surfacing as a distinct, triaged finding.
+    const agentRuns = runsStore.listForAgent(id, 200);
+    sentinel.evaluateAfterRun({ agentId: id, agentName: agent.name, status, runsForAgent: agentRuns });
+    if (overCap) {
+      sentinel.evaluateBudgetPressure({ agentId: id, agentName: agent.name, overCapRunsForAgent: agentRuns.filter((r) => r.overBudgetCap) });
+    }
 
     rt.runId = null;
     rt.timedOut = false;

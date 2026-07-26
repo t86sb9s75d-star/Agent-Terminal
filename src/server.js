@@ -12,6 +12,8 @@ const eventLog = require('./eventLog');
 const workstreamsStore = require('./workstreamsStore');
 const runsStore = require('./runsStore');
 const configHistoryStore = require('./configHistoryStore');
+const sentinel = require('./sentinel');
+const systemState = require('./systemState');
 const instanceLock = require('./instanceLock');
 const { idempotencyMiddleware } = require('./idempotency');
 const { AppError, Codes } = require('./errors');
@@ -81,11 +83,20 @@ function broadcast(payload) {
 // events discovered on ANY later read — not just the one-time boot check —
 // are actually recorded, not silently dropped (the previous gap: only
 // agents.json had a boot-time integrity check at all, and even that never
-// reached the audit log for events found after startup).
+// reached the audit log for events found after startup). Integrity events
+// specifically are ALSO promoted to a tracked Sentinel finding, not just an
+// audit log line — see sentinel.js.
+function onStoreEvent(event) {
+  eventLog.record(event);
+  const match = /^(.+)\.(tamper_detected|corrupt_no_backup|unsupported_schema)$/.exec(event.action);
+  if (match) sentinel.evaluateIntegrityEvent({ storeName: match[1], reason: match[2], detail: event.details });
+}
+
 eventLog.init(broadcast);
-store.init(eventLog.record);
-runsStore.init(eventLog.record);
-workstreamsStore.init(eventLog.record);
+store.init(onStoreEvent);
+runsStore.init(onStoreEvent);
+workstreamsStore.init(onStoreEvent);
+sentinel.init({ onEvent: onStoreEvent, eventLogRecord: eventLog.record });
 agentManager.init(broadcast);
 
 // Phase 3.5 — resolve any run left `running` by a previous process that
@@ -385,6 +396,64 @@ app.post('/api/agents/:id/stop', async (req, res) => {
 app.get('/api/agents/:id/logs', (req, res) => {
   if (!store.get(req.params.id)) return sendError(res, new AppError(Codes.AGENT_NOT_FOUND, 'agent not found', 404), req);
   res.type('text/plain').send(agentManager.getLogs(req.params.id));
+});
+
+// --- Security (Sentinel, Phase 7 scoped) ---
+app.get('/api/security/status', (req, res) => {
+  res.json({ healthy: systemState.isSystemHealthy(), degraded: systemState.listDegraded() });
+});
+
+app.get('/api/security/findings', (req, res) => {
+  res.json(sentinel.list({ status: req.query.status || null }));
+});
+
+app.get('/api/security/findings/:id', (req, res) => {
+  const finding = sentinel.get(req.params.id);
+  if (!finding) return sendError(res, new AppError(Codes.NOT_FOUND, 'security finding not found', 404), req);
+  res.json(finding);
+});
+
+app.post('/api/security/findings/:id/acknowledge', (req, res) => {
+  try {
+    const finding = sentinel.transition(req.params.id, { status: 'acknowledged', actor: actorFromRequest(req), note: req.body?.note });
+    res.json(finding);
+  } catch (err) {
+    sendError(res, err, req);
+  }
+});
+
+// Containment is ALWAYS operator-initiated (see sentinel.js module comment
+// — Sentinel proposes via suggestedAction, never acts on its own). Stopping
+// the implicated agent is an explicit opt-in (`stopAgent: true`), not a
+// side effect of marking a finding contained, so an operator can record
+// "I've contained this" without that silently also killing a run they
+// didn't ask to stop.
+app.post('/api/security/findings/:id/contain', async (req, res) => {
+  try {
+    const finding = sentinel.get(req.params.id);
+    if (!finding) throw new AppError(Codes.NOT_FOUND, 'security finding not found', 404);
+    const actor = actorFromRequest(req);
+    let stoppedAgent = false;
+    if (req.body?.stopAgent === true && finding.entityType === 'agent') {
+      if (agentManager.getStatus(finding.entityId) === 'running') {
+        await agentManager.stop(finding.entityId, actor);
+        stoppedAgent = true;
+      }
+    }
+    const updated = sentinel.transition(req.params.id, { status: 'contained', actor, note: req.body?.note });
+    res.json({ ...updated, stoppedAgent });
+  } catch (err) {
+    sendError(res, err, req);
+  }
+});
+
+app.post('/api/security/findings/:id/resolve', (req, res) => {
+  try {
+    const finding = sentinel.transition(req.params.id, { status: 'resolved', actor: actorFromRequest(req), note: req.body?.note });
+    res.json(finding);
+  } catch (err) {
+    sendError(res, err, req);
+  }
 });
 
 server.listen(PORT, HOST, () => {

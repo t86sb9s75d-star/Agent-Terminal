@@ -66,13 +66,14 @@ function startRun({ agentId, provider, model, workstreamId, requestId }) {
     costUsd: null,
     error: null,
     outputTruncated: false,
+    overBudgetCap: false,
   };
   runs.push(run);
   writeAll(runs);
   return run;
 }
 
-function finishRun(runId, { status, inputTokens, outputTokens, cachedTokens, costUsd, error, outputTruncated }) {
+function finishRun(runId, { status, inputTokens, outputTokens, cachedTokens, costUsd, error, outputTruncated, overBudgetCap }) {
   const runs = readAll();
   const idx = runs.findIndex((r) => r.id === runId);
   if (idx === -1) return null;
@@ -86,6 +87,7 @@ function finishRun(runId, { status, inputTokens, outputTokens, cachedTokens, cos
   run.costUsd = costUsd ?? null;
   run.error = error || null;
   if (outputTruncated) run.outputTruncated = true;
+  if (overBudgetCap) run.overBudgetCap = true;
   runs[idx] = run;
   writeAll(runs);
   return run;
