@@ -410,6 +410,57 @@ async function run() {
     }
   });
 
+  await check('a run exceeding the runtime ceiling is terminated and marked timed_out', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir, { RUCKER_DEFAULT_RUNTIME_TIMEOUT_MS: '1000' });
+    try {
+      await waitForReady(server.baseUrl);
+      const agent = await (await fetch(`${server.baseUrl}/api/agents`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Long Runner', provider: 'custom', command: 'sleep 30' }),
+      })).json();
+      await fetch(`${server.baseUrl}/api/agents/${agent.id}/start`, { method: 'POST' });
+
+      await new Promise((r) => setTimeout(r, 2500));
+
+      const runsRes = await (await fetch(`${server.baseUrl}/api/agents/${agent.id}/runs`)).json();
+      assert.strictEqual(runsRes.runs[0].status, 'timed_out');
+
+      const events = await (await fetch(`${server.baseUrl}/api/activity?limit=5`)).json();
+      const timeoutEvent = events.find((e) => e.action === 'run.timed_out');
+      assert.ok(timeoutEvent, 'run.timed_out event should be recorded');
+      assert.strictEqual(timeoutEvent.actor.actorType, 'policy_engine', 'a timeout is enforced by the system, not the requester');
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('output beyond the configured cap is truncated, not unbounded', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir, { RUCKER_MAX_OUTPUT_BYTES: '10000' });
+    try {
+      await waitForReady(server.baseUrl);
+      const agent = await (await fetch(`${server.baseUrl}/api/agents`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Firehose', provider: 'custom', command: 'yes | head -c 200000' }),
+      })).json();
+      await fetch(`${server.baseUrl}/api/agents/${agent.id}/start`, { method: 'POST' });
+      await new Promise((r) => setTimeout(r, 1500));
+
+      const logPath = path.join(dataDir, 'logs', `${agent.id}.log`);
+      const size = fs.statSync(logPath).size;
+      assert.ok(size < 200000, `log file should be capped well below the ~200KB the command would produce, got ${size}`);
+      assert.ok(size < 20000, `log file should be capped near the 10000-byte limit plus the truncation marker, got ${size}`);
+
+      const runsRes = await (await fetch(`${server.baseUrl}/api/agents/${agent.id}/runs`)).json();
+      assert.strictEqual(runsRes.runs[0].outputTruncated, true);
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   await check('per-agent daily spending cap blocks a paid-provider run from starting', async () => {
     const dataDir = freshDataDir();
     const server = startServer(dataDir, { RUCKER_MAX_DAILY_COST_PER_AGENT_USD: '1.00' });
