@@ -1,10 +1,15 @@
 const OpenAI = require('openai');
 
+// Phase 4.5 — see the matching comment in workers/anthropic.js: this is a
+// network-level timeout on the provider call itself, separate from the
+// operator-facing runtime ceiling enforced in agentManager.js.
+const PROVIDER_TIMEOUT_MS = Number(process.env.RUCKER_PROVIDER_TIMEOUT_MS) || 5 * 60 * 1000; // 5 min
+
 async function runOpenAI({ agent, onLog, signal }) {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error('OPENAI_API_KEY is not set on the server');
   }
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: PROVIDER_TIMEOUT_MS });
   const model = agent.model || 'gpt-4o-mini';
 
   const messages = [];
@@ -19,7 +24,7 @@ async function runOpenAI({ agent, onLog, signal }) {
       stream: true,
       stream_options: { include_usage: true },
     },
-    { signal }
+    { signal, timeout: PROVIDER_TIMEOUT_MS }
   );
 
   let finishReason = null;
