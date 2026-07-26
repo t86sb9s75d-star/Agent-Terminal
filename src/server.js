@@ -12,8 +12,22 @@ const eventLog = require('./eventLog');
 const workstreamsStore = require('./workstreamsStore');
 const runsStore = require('./runsStore');
 const configHistoryStore = require('./configHistoryStore');
+const instanceLock = require('./instanceLock');
 const { AppError, Codes } = require('./errors');
 const { requestIdMiddleware, actorFromRequest, SYSTEM_ACTOR, RECOVERY_ACTOR } = require('./actor');
+
+const DATA_DIR = path.join(__dirname, '..', 'data');
+
+// Additional failure mode — refuse to start a second instance against the
+// same data directory; every store here assumes single-process ownership
+// (see src/instanceLock.js). Must happen before anything touches data/.
+try {
+  instanceLock.acquire(DATA_DIR);
+} catch (err) {
+  // eslint-disable-next-line no-console
+  console.error(`[fatal] ${err.message}`);
+  process.exit(1);
+}
 
 const app = express();
 app.use(requestIdMiddleware);
