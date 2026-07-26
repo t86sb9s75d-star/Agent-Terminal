@@ -1,5 +1,6 @@
 const { spawn } = require('child_process');
 
+<<<<<<< HEAD
 // Phase 4.1 — deny-by-default environment for custom-command agents.
 //
 // The prior implementation passed `env: process.env` — the FULL server
@@ -66,6 +67,8 @@ function terminateProcessGroup(child, { gracePeriodMs = 5000 } = {}) {
   });
 }
 
+=======
+>>>>>>> origin/main
 function runCustom({ agent, onLog, runtime }) {
   return new Promise((resolve, reject) => {
     if (!agent.command || !agent.command.trim()) {
@@ -75,6 +78,7 @@ function runCustom({ agent, onLog, runtime }) {
 
     const child = spawn(agent.command, {
       shell: true,
+<<<<<<< HEAD
       env: minimalEnv(),
       detached: true, // process-group leader, so termination can reach the whole tree
     });
@@ -106,6 +110,14 @@ function runCustom({ agent, onLog, runtime }) {
 
     child.stdout.on('data', emit);
     child.stderr.on('data', emit);
+=======
+      env: process.env,
+    });
+    runtime.child = child;
+
+    child.stdout.on('data', (data) => onLog(data.toString()));
+    child.stderr.on('data', (data) => onLog(data.toString()));
+>>>>>>> origin/main
 
     child.on('error', (err) => reject(err));
 
@@ -128,7 +140,10 @@ function runCustom({ agent, onLog, runtime }) {
 }
 
 module.exports = runCustom;
+<<<<<<< HEAD
 module.exports.terminateProcessGroup = terminateProcessGroup;
 module.exports.minimalEnv = minimalEnv;
 module.exports.ALLOWED_ENV_VARS = ALLOWED_ENV_VARS;
 module.exports.MAX_OUTPUT_BYTES = MAX_OUTPUT_BYTES;
+=======
+>>>>>>> origin/main

@@ -15,6 +15,7 @@ Naismith is the intelligence system; Rucker Park is where it's operated. This fi
 - **Real cost tracking** — token usage is read from each provider's response and priced against a documented table (`src/pricing.js`). Cost aggregates are structured (`complete` / `partial` / `unavailable` / `empty`) so a mix of priced and unpriced runs is never silently summed and shown as if it were a complete total — see `test/runsStore.pricing.test.js`.
 - **Run history** — every run is a discrete, timestamped record (duration, tokens, cost, outcome), queryable per agent.
 - **Audit trail** — every state-changing action (agent created/edited/deleted, every run started/stopped/completed/failed) is logged append-only with actor, timestamp, and details, and streamed live to the Activity view (two-level: human-readable summary, expandable technical detail).
+<<<<<<< HEAD
 - **Registry integrity check** — every store (not just agents), not just `agents.json`, is hash-verified on every read; an edit made outside the API is flagged and stays flagged until an operator explicitly resolves it — never silently re-baselined. See `docs/PERSISTENCE_AND_RECOVERY.md`.
 - **Crash-safe by construction** — atomic writes, corruption-vs-empty-state distinction, rotating backups, and boot-time recovery for any run left mid-execution by an unclean shutdown. See `docs/PERSISTENCE_AND_RECOVERY.md`.
 - **Runtime isolation** — custom-agent shell commands run with a minimal, secret-excluding environment; a hard per-run timeout and output-size cap prevent a runaway process from running (or logging) forever; full process-tree termination on stop, not just the immediate shell wrapper.
@@ -34,6 +35,12 @@ What's deliberately **not** measured yet: task/answer quality, decision quality,
 - `docs/INCIDENT_RESPONSE.md` — what to actually do for each kind of signal
 - `docs/VERIFICATION_MATRIX.md` — every safety claim above, labeled by how it was actually verified
 
+=======
+- **Registry integrity check** — `agents.json` is hash-verified on every server start; an edit made outside the API (bypassing the system) is flagged in the audit trail instead of silently accepted.
+
+What's deliberately **not** measured yet: task/answer quality, decision quality, or any single "reliability" score. Cards show "Execution success" (did the run finish without error — cancelled runs are excluded from this rate, not scored as failures, since stopping a run is an operator decision) and "Task quality: Not measured" — those are different things, and only the first one is real right now.
+
+>>>>>>> origin/main
 ## Design system
 
 The UI follows `docs/VISUAL_REFERENCE_AUDIT.md` — a short, practical record of the structural patterns (hierarchy, typography, segmented-control usage, motion restraint) it's built against, so later changes have something concrete to check themselves against instead of drifting back toward generic dashboard defaults.
@@ -41,12 +48,19 @@ The UI follows `docs/VISUAL_REFERENCE_AUDIT.md` — a short, practical record of
 ## Tests
 
 ```bash
+<<<<<<< HEAD
 npm test              # unit tests, then integration tests
 npm run test:unit      # fast unit tests only
 npm run test:integration  # spawns real server instances against throwaway data directories
 ```
 
 Unit tests cover the cost-aggregation, execution-success, and workstream-status/history semantics described above — the places a well-intentioned refactor could quietly reintroduce a misleading number or silently rewrite history. Integration tests spawn a real `node src/server.js` process per case and talk to it over real HTTP, covering the safety-foundation behaviors: crash recovery, tamper detection, archived-workstream enforcement, the path-traversal fix, CSRF rejection, single-instance locking, idempotency-key replay, runtime timeouts, output truncation, budget enforcement, and Sentinel findings/containment. 27 unit + 14 integration = 41 tests, all passing. See `docs/VERIFICATION_MATRIX.md` for exactly what each safety claim is (and isn't) covered by.
+=======
+npm test
+```
+
+Covers the cost-aggregation, execution-success, and workstream-status/history semantics described above (`test/`). These are the places a well-intentioned refactor could quietly reintroduce a misleading number or silently rewrite history, so they're pinned down explicitly (23 cases across three files).
+>>>>>>> origin/main
 
 ## Getting started
 
@@ -68,17 +82,22 @@ The dashboard is served at `http://127.0.0.1:4173` by default (override with `HO
 
 ## Security note
 
+<<<<<<< HEAD
 Rucker Park has no built-in authentication and the `custom` provider executes arbitrary shell commands you configure — that's an accepted, documented trust boundary (the operator authors their own commands through the same trusted API as everything else), not an oversight. It binds to `127.0.0.1` by default and is intended to run locally on a trusted machine — do not expose it directly to the internet without adding your own auth/reverse-proxy layer. A cross-origin-request check (`docs/SECURITY_MODEL.md`) still protects against a webpage in the same browser blind-POSTing to the dashboard, since "localhost-only" doesn't mean "safe from the browser." The audit trail records every action taken through the API and flags edits made directly to any store file on disk (not just the registry), but it cannot see or log activity that never goes through this system. See `docs/SECURITY_MODEL.md` for the complete threat model and every control actually implemented.
 
 ## Environment variables
 
 See `docs/OPERATIONS.md` for the full reference (timeouts, output caps, spending limits, data directory override). `PORT`/`HOST` and provider API keys are set via `.env` as shown above.
+=======
+Rucker Park has no built-in authentication and the `custom` provider executes arbitrary shell commands you configure. It binds to `127.0.0.1` by default and is intended to run locally on a trusted machine — do not expose it directly to the internet without adding your own auth/reverse-proxy layer. The audit trail records every action taken through the API and flags edits made directly to the registry file on disk, but it cannot see or log activity that never goes through this system.
+>>>>>>> origin/main
 
 ## Project layout
 
 ```
 src/
   server.js            Express API + WebSocket server
+<<<<<<< HEAD
   agentManager.js       Runtime lifecycle: start/stop, timeouts, budget checks, Sentinel evaluation
   actor.js               HTTP request -> structured actor object; request-ID + CSRF middleware
   errors.js               Stable error codes (AppError)
@@ -101,6 +120,17 @@ data/                    Runtime state (gitignored) — agents.json, runs.json, 
 test/
   *.test.js               Unit tests (cost, execution-success, workstream semantics)
   integration.test.js       Spawns real server instances against throwaway data directories
+=======
+  agentManager.js       Runtime lifecycle: start/stop, run records, audit events
+  store.js              JSON-file backed agent registry + integrity check
+  runsStore.js           Per-run history (tokens, cost, duration, outcome, workstream snapshot)
+  workstreamsStore.js     Workstreams: CRUD, effective status, derived metrics
+  eventLog.js             Append-only audit trail
+  pricing.js               $/token table used to estimate run cost
+  workers/               One runner per provider (anthropic, openai, custom)
+public/                  Rucker Park dashboard (vanilla JS, no build step)
+data/                    Runtime state: agents.json, runs.json, workstreams.json, events.jsonl, logs/ (gitignored)
+>>>>>>> origin/main
 ```
 
 ## Roadmap (not built yet)

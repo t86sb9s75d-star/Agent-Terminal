@@ -771,6 +771,7 @@ button { font-family: inherit; font-size: inherit; color: inherit; }
 .activity-row.new-event { animation: new-event-in 1.6s var(--ease-out); }
 
 /* ============================================================
+<<<<<<< HEAD
    Security view (Sentinel findings + system health)
    ============================================================ */
 
@@ -807,6 +808,8 @@ button { font-family: inherit; font-size: inherit; color: inherit; }
 #degraded-stores .activity-row-summary { cursor: default; }
 
 /* ============================================================
+=======
+>>>>>>> origin/main
    Modal / Confirm dialog
    ============================================================ */
 

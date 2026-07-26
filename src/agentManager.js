@@ -4,11 +4,15 @@ const path = require('path');
 const store = require('./store');
 const runsStore = require('./runsStore');
 const eventLog = require('./eventLog');
+<<<<<<< HEAD
 const workstreamsStore = require('./workstreamsStore');
+=======
+>>>>>>> origin/main
 const { estimateCostUsd } = require('./pricing');
 const runAnthropic = require('./workers/anthropic');
 const runOpenAI = require('./workers/openai');
 const runCustom = require('./workers/custom');
+<<<<<<< HEAD
 const { terminateProcessGroup } = runCustom;
 const { SYSTEM_ACTOR, POLICY_ACTOR } = require('./actor');
 const { AppError, Codes } = require('./errors');
@@ -16,6 +20,10 @@ const budget = require('./budget');
 const sentinel = require('./sentinel');
 
 const LOGS_DIR = path.join(process.env.RUCKER_DATA_DIR || path.join(__dirname, '..', 'data'), 'logs');
+=======
+
+const LOGS_DIR = path.join(__dirname, '..', 'data', 'logs');
+>>>>>>> origin/main
 const MAX_BUFFER_LINES = 2000;
 
 // id -> { status, startedAt, abortController, child, buffer: [], runId }
@@ -37,8 +45,11 @@ function getRuntime(id) {
       child: null,
       buffer: [],
       runId: null,
+<<<<<<< HEAD
       timedOut: false,
       outputTruncated: false,
+=======
+>>>>>>> origin/main
     });
   }
   return runtime.get(id);
@@ -56,6 +67,7 @@ function getAllStatuses() {
   return out;
 }
 
+<<<<<<< HEAD
 // Additional failure mode — path traversal. `id` reaches here from
 // req.params.id, an ordinary Express route param with no format
 // enforcement; a caller passing e.g. "../../../../tmp/evil" as an agent id
@@ -67,6 +79,10 @@ function getAllStatuses() {
 // in `id` or which call site forgot to validate it first.
 function logFilePath(id) {
   return path.join(LOGS_DIR, `${path.basename(String(id))}.log`);
+=======
+function logFilePath(id) {
+  return path.join(LOGS_DIR, `${id}.log`);
+>>>>>>> origin/main
 }
 
 function appendLog(id, chunk) {
@@ -94,6 +110,7 @@ function getLogs(id, tailChars = 20000) {
   return buf.toString('utf8');
 }
 
+<<<<<<< HEAD
 // Phase 4.3 — hard runtime ceiling. Without this, a hung provider call or a
 // runaway custom command runs forever with nothing watching; the run stays
 // "running" indefinitely and never resolves to a state anyone can act on.
@@ -120,19 +137,37 @@ async function start(id, actor = SYSTEM_ACTOR) {
   rt.abortController = new AbortController();
   rt.timedOut = false;
   rt.outputTruncated = false;
+=======
+async function start(id) {
+  const agent = store.get(id);
+  if (!agent) throw new Error('agent not found');
+
+  const rt = getRuntime(id);
+  if (rt.status === 'running') throw new Error('agent is already running');
+
+  rt.startedAt = Date.now();
+  rt.abortController = new AbortController();
+>>>>>>> origin/main
   const run = runsStore.startRun({
     agentId: id,
     provider: agent.provider,
     model: agent.model,
     workstreamId: agent.workstreamId,
+<<<<<<< HEAD
     requestId: actor.requestId || null,
+=======
+>>>>>>> origin/main
   });
   rt.runId = run.id;
 
   setStatus(id, 'running');
   appendLog(id, `--- starting "${agent.name}" (${agent.provider}) ---\n`);
   eventLog.record({
+<<<<<<< HEAD
     actor,
+=======
+    actor: 'operator',
+>>>>>>> origin/main
     action: 'run.started',
     entityType: 'agent',
     entityId: id,
@@ -147,6 +182,7 @@ async function start(id, actor = SYSTEM_ACTOR) {
 
   const onLog = (chunk) => appendLog(id, chunk);
 
+<<<<<<< HEAD
   const maxRuntimeMs = Number(agent.maxRuntimeMs) > 0 ? Number(agent.maxRuntimeMs) : DEFAULT_MAX_RUNTIME_MS;
   const runtimeTimer = setTimeout(() => {
     rt.timedOut = true;
@@ -167,6 +203,15 @@ async function start(id, actor = SYSTEM_ACTOR) {
       appendLog(id, `\n--- stopped: runtime limit exceeded ---\n`);
       setStatus(id, 'error');
     } else if (err && ABORT_ERROR_NAMES.has(err.name)) {
+=======
+  const ABORT_ERROR_NAMES = new Set(['AbortError', 'APIUserAbortError']);
+  const finish = (err, usage) => {
+    rt.abortController = null;
+    rt.child = null;
+
+    let status; // completed | error | cancelled
+    if (err && ABORT_ERROR_NAMES.has(err.name)) {
+>>>>>>> origin/main
       status = 'cancelled';
       appendLog(id, `\n--- stopped ---\n`);
       setStatus(id, 'idle');
@@ -184,12 +229,15 @@ async function start(id, actor = SYSTEM_ACTOR) {
     const outputTokens = usage?.outputTokens ?? null;
     const cachedTokens = usage?.cachedTokens ?? null;
     const costUsd = estimateCostUsd(agent.provider, agent.model, inputTokens, outputTokens);
+<<<<<<< HEAD
     const runError = status === 'error' ? err.message : status === 'timed_out' ? `runtime limit exceeded (${maxRuntimeMs}ms)` : null;
 
     // Phase 4.6 — the per-run cap can't be checked before the call (cost is
     // only known once usage is reported back), so it's surfaced here as a
     // flagged policy signal for the operator rather than a pre-flight block.
     const overCap = budget.exceededPerRunCap(costUsd);
+=======
+>>>>>>> origin/main
 
     runsStore.finishRun(rt.runId, {
       status,
@@ -197,6 +245,7 @@ async function start(id, actor = SYSTEM_ACTOR) {
       outputTokens,
       cachedTokens,
       costUsd,
+<<<<<<< HEAD
       error: runError,
       outputTruncated: rt.outputTruncated,
       overBudgetCap: overCap,
@@ -214,6 +263,14 @@ async function start(id, actor = SYSTEM_ACTOR) {
       // started the run — attribute it to the policy engine, not them.
       actor: status === 'timed_out' ? POLICY_ACTOR : actor,
       action: actionByStatus[status],
+=======
+      error: err && status === 'error' ? err.message : null,
+    });
+
+    eventLog.record({
+      actor: 'operator',
+      action: status === 'completed' ? 'run.completed' : status === 'cancelled' ? 'run.cancelled' : 'run.failed',
+>>>>>>> origin/main
       entityType: 'agent',
       entityId: id,
       details: {
@@ -223,6 +280,7 @@ async function start(id, actor = SYSTEM_ACTOR) {
         inputTokens,
         outputTokens,
         costUsd,
+<<<<<<< HEAD
         error: runError,
         outputTruncated: rt.outputTruncated,
         overBudgetCap: overCap,
@@ -243,6 +301,15 @@ async function start(id, actor = SYSTEM_ACTOR) {
 
     rt.runId = null;
     rt.timedOut = false;
+=======
+        error: err && status === 'error' ? err.message : null,
+      },
+      flagged: status === 'error',
+      flagReason: status === 'error' ? 'run failed' : null,
+    });
+
+    rt.runId = null;
+>>>>>>> origin/main
   };
 
   let runPromise;
@@ -264,28 +331,46 @@ async function start(id, actor = SYSTEM_ACTOR) {
   runPromise.then((usage) => finish(null, usage)).catch((err) => finish(err));
 }
 
+<<<<<<< HEAD
 async function stop(id, actor = SYSTEM_ACTOR) {
   const rt = getRuntime(id);
   if (rt.status !== 'running') throw new AppError(Codes.RUN_NOT_ACTIVE, 'agent is not running', 409);
   const agent = store.get(id);
   eventLog.record({
     actor,
+=======
+function stop(id) {
+  const rt = getRuntime(id);
+  if (rt.status !== 'running') throw new Error('agent is not running');
+  if (rt.child) rt.child.kill('SIGTERM');
+  if (rt.abortController) rt.abortController.abort();
+  const agent = store.get(id);
+  eventLog.record({
+    actor: 'operator',
+>>>>>>> origin/main
     action: 'run.stop_requested',
     entityType: 'agent',
     entityId: id,
     details: { agentName: agent?.name, runId: rt.runId, workstreamId: agent?.workstreamId },
   });
+<<<<<<< HEAD
   // Full process-tree termination (Phase 4.2) for custom shell commands —
   // reaches grandchildren the old `.kill('SIGTERM')` on the shell wrapper
   // alone could leave running. Provider calls have no child process; the
   // AbortController is what actually cancels those.
   if (rt.child) await terminateProcessGroup(rt.child);
   if (rt.abortController) rt.abortController.abort();
+=======
+>>>>>>> origin/main
 }
 
 function discard(id) {
   const rt = runtime.get(id);
+<<<<<<< HEAD
   if (rt && rt.status === 'running') throw new AppError(Codes.RUN_ALREADY_ACTIVE, 'stop the agent before deleting it', 409);
+=======
+  if (rt && rt.status === 'running') throw new Error('stop the agent before deleting it');
+>>>>>>> origin/main
   runtime.delete(id);
   const filePath = logFilePath(id);
   if (fs.existsSync(filePath)) fs.unlinkSync(filePath);

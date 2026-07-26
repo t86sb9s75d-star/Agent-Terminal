@@ -1,7 +1,10 @@
 require('dotenv').config();
 
 const path = require('path');
+<<<<<<< HEAD
 const crypto = require('crypto');
+=======
+>>>>>>> origin/main
 const http = require('http');
 const express = require('express');
 const { WebSocketServer } = require('ws');
@@ -11,6 +14,7 @@ const agentManager = require('./agentManager');
 const eventLog = require('./eventLog');
 const workstreamsStore = require('./workstreamsStore');
 const runsStore = require('./runsStore');
+<<<<<<< HEAD
 const configHistoryStore = require('./configHistoryStore');
 const sentinel = require('./sentinel');
 const systemState = require('./systemState');
@@ -67,6 +71,11 @@ app.use(requestIdMiddleware);
 app.use(originCheckMiddleware);
 app.use(express.json());
 app.use(idempotencyMiddleware);
+=======
+
+const app = express();
+app.use(express.json());
+>>>>>>> origin/main
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 const server = http.createServer(app);
@@ -79,6 +88,7 @@ function broadcast(payload) {
   }
 }
 
+<<<<<<< HEAD
 // Every store gets the audit emitter wired in at boot, so corruption/tamper
 // events discovered on ANY later read — not just the one-time boot check —
 // are actually recorded, not silently dropped (the previous gap: only
@@ -121,6 +131,15 @@ const integrity = store.checkIntegrity();
 if (integrity.tampered) {
   eventLog.record({
     actor: SYSTEM_ACTOR,
+=======
+eventLog.init(broadcast);
+agentManager.init(broadcast);
+
+const integrity = store.checkIntegrity();
+if (integrity.tampered) {
+  eventLog.record({
+    actor: 'system',
+>>>>>>> origin/main
     action: 'registry.external_modification_detected',
     entityType: 'system',
     entityId: 'agents.json',
@@ -130,6 +149,7 @@ if (integrity.tampered) {
   });
 }
 
+<<<<<<< HEAD
 // Stable error responses (Phase 8.1) — an AppError's code/status are trusted
 // and returned as-is; anything else is an unexpected internal error and is
 // deliberately NOT leaked to the client (raw JS exception messages can
@@ -149,6 +169,8 @@ function sendError(res, err, req) {
   return res.status(500).json({ error: 'internal server error', code: 'INTERNAL_ERROR', requestId: req?.requestId || null });
 }
 
+=======
+>>>>>>> origin/main
 wss.on('connection', (ws) => {
   ws.send(JSON.stringify({ type: 'hello', statuses: agentManager.getAllStatuses() }));
 });
@@ -190,7 +212,11 @@ app.get('/api/workstreams', (req, res) => {
 
 app.get('/api/workstreams/:id', (req, res) => {
   const ws = workstreamsStore.get(req.params.id);
+<<<<<<< HEAD
   if (!ws) return sendError(res, new AppError(Codes.WORKSTREAM_NOT_FOUND, 'workstream not found', 404), req);
+=======
+  if (!ws) return res.status(404).json({ error: 'workstream not found' });
+>>>>>>> origin/main
   const agents = store.list();
   const runs = runsStore.listAll();
   res.json(decorateWorkstream(ws, agents, runs));
@@ -200,7 +226,11 @@ app.post('/api/workstreams', (req, res) => {
   try {
     const ws = workstreamsStore.create(req.body || {});
     eventLog.record({
+<<<<<<< HEAD
       actor: actorFromRequest(req),
+=======
+      actor: 'operator',
+>>>>>>> origin/main
       action: 'workstream.created',
       entityType: 'workstream',
       entityId: ws.id,
@@ -208,7 +238,11 @@ app.post('/api/workstreams', (req, res) => {
     });
     res.status(201).json(ws);
   } catch (err) {
+<<<<<<< HEAD
     sendError(res, err, req);
+=======
+    res.status(400).json({ error: err.message });
+>>>>>>> origin/main
   }
 });
 
@@ -216,7 +250,11 @@ app.put('/api/workstreams/:id', (req, res) => {
   try {
     const ws = workstreamsStore.update(req.params.id, req.body || {});
     eventLog.record({
+<<<<<<< HEAD
       actor: actorFromRequest(req),
+=======
+      actor: 'operator',
+>>>>>>> origin/main
       action: 'workstream.updated',
       entityType: 'workstream',
       entityId: ws.id,
@@ -224,7 +262,11 @@ app.put('/api/workstreams/:id', (req, res) => {
     });
     res.json(ws);
   } catch (err) {
+<<<<<<< HEAD
     sendError(res, err, req);
+=======
+    res.status(400).json({ error: err.message });
+>>>>>>> origin/main
   }
 });
 
@@ -232,12 +274,20 @@ app.post('/api/workstreams/:id/archive', (req, res) => {
   try {
     const ws = workstreamsStore.setArchived(req.params.id, true);
     eventLog.record({
+<<<<<<< HEAD
       actor: actorFromRequest(req), action: 'workstream.archived', entityType: 'workstream', entityId: ws.id,
+=======
+      actor: 'operator', action: 'workstream.archived', entityType: 'workstream', entityId: ws.id,
+>>>>>>> origin/main
       details: { name: ws.name },
     });
     res.json(ws);
   } catch (err) {
+<<<<<<< HEAD
     sendError(res, err, req);
+=======
+    res.status(400).json({ error: err.message });
+>>>>>>> origin/main
   }
 });
 
@@ -245,11 +295,16 @@ app.post('/api/workstreams/:id/unarchive', (req, res) => {
   try {
     const ws = workstreamsStore.setArchived(req.params.id, false);
     eventLog.record({
+<<<<<<< HEAD
       actor: actorFromRequest(req), action: 'workstream.unarchived', entityType: 'workstream', entityId: ws.id,
+=======
+      actor: 'operator', action: 'workstream.unarchived', entityType: 'workstream', entityId: ws.id,
+>>>>>>> origin/main
       details: { name: ws.name },
     });
     res.json(ws);
   } catch (err) {
+<<<<<<< HEAD
     sendError(res, err, req);
   }
 });
@@ -267,6 +322,9 @@ app.post('/api/workstreams/:id/resolve/:runId', (req, res) => {
     res.json(ws);
   } catch (err) {
     sendError(res, err, req);
+=======
+    res.status(400).json({ error: err.message });
+>>>>>>> origin/main
   }
 });
 
@@ -287,43 +345,71 @@ app.get('/api/agents', (req, res) => {
 
 app.get('/api/agents/:id', (req, res) => {
   const agent = store.get(req.params.id);
+<<<<<<< HEAD
   if (!agent) return sendError(res, new AppError(Codes.AGENT_NOT_FOUND, 'agent not found', 404), req);
+=======
+  if (!agent) return res.status(404).json({ error: 'agent not found' });
+>>>>>>> origin/main
   const runSummary = agentManager.getAgentRuns(agent.id).summary;
   res.json(withWorkstreamName({ ...agent, status: agentManager.getStatus(agent.id), ...runSummary }));
 });
 
 app.get('/api/agents/:id/runs', (req, res) => {
+<<<<<<< HEAD
   if (!store.get(req.params.id)) return sendError(res, new AppError(Codes.AGENT_NOT_FOUND, 'agent not found', 404), req);
+=======
+  if (!store.get(req.params.id)) return res.status(404).json({ error: 'agent not found' });
+>>>>>>> origin/main
   res.json(agentManager.getAgentRuns(req.params.id));
 });
 
 app.post('/api/agents', (req, res) => {
   try {
     const agent = store.create(req.body || {});
+<<<<<<< HEAD
     const actor = actorFromRequest(req);
     eventLog.record({
       actor,
+=======
+    eventLog.record({
+      actor: 'operator',
+>>>>>>> origin/main
       action: 'agent.created',
       entityType: 'agent',
       entityId: agent.id,
       details: { name: agent.name, provider: agent.provider },
     });
+<<<<<<< HEAD
     configHistoryStore.record({ agentId: agent.id, action: 'created', actor, before: null, after: agent }, eventLog.record);
     res.status(201).json(agent);
   } catch (err) {
     sendError(res, err, req);
+=======
+    res.status(201).json(agent);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+>>>>>>> origin/main
   }
 });
 
 app.put('/api/agents/:id', (req, res) => {
   try {
     if (agentManager.getStatus(req.params.id) === 'running') {
+<<<<<<< HEAD
       throw new AppError(Codes.VALIDATION_ERROR, 'stop the agent before editing it', 409);
     }
     const { before, after: agent } = store.update(req.params.id, req.body || {});
     const actor = actorFromRequest(req);
     eventLog.record({
       actor,
+=======
+      return res.status(409).json({ error: 'stop the agent before editing it' });
+    }
+    const before = store.get(req.params.id);
+    const agent = store.update(req.params.id, req.body || {});
+    eventLog.record({
+      actor: 'operator',
+>>>>>>> origin/main
       action: 'agent.updated',
       entityType: 'agent',
       entityId: agent.id,
@@ -333,7 +419,11 @@ app.put('/api/agents/:id', (req, res) => {
       const fromWs = before.workstreamId ? workstreamsStore.get(before.workstreamId) : null;
       const toWs = agent.workstreamId ? workstreamsStore.get(agent.workstreamId) : null;
       eventLog.record({
+<<<<<<< HEAD
         actor,
+=======
+        actor: 'operator',
+>>>>>>> origin/main
         action: 'agent.workstream_changed',
         entityType: 'agent',
         entityId: agent.id,
@@ -346,27 +436,41 @@ app.put('/api/agents/:id', (req, res) => {
         },
       });
     }
+<<<<<<< HEAD
     configHistoryStore.record({ agentId: agent.id, action: 'updated', actor, before, after: agent }, eventLog.record);
     res.json(withWorkstreamName(agent));
   } catch (err) {
     sendError(res, err, req);
+=======
+    res.json(withWorkstreamName(agent));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+>>>>>>> origin/main
   }
 });
 
 app.delete('/api/agents/:id', (req, res) => {
   try {
     const agent = store.get(req.params.id);
+<<<<<<< HEAD
     if (!agent) throw new AppError(Codes.AGENT_NOT_FOUND, 'agent not found', 404);
     agentManager.discard(req.params.id);
     store.remove(req.params.id);
     const actor = actorFromRequest(req);
     eventLog.record({
       actor,
+=======
+    agentManager.discard(req.params.id);
+    store.remove(req.params.id);
+    eventLog.record({
+      actor: 'operator',
+>>>>>>> origin/main
       action: 'agent.deleted',
       entityType: 'agent',
       entityId: req.params.id,
       details: { name: agent?.name },
     });
+<<<<<<< HEAD
     if (agent) configHistoryStore.record({ agentId: agent.id, action: 'deleted', actor, before: agent, after: null }, eventLog.record);
     res.status(204).end();
   } catch (err) {
@@ -396,10 +500,36 @@ app.post('/api/agents/:id/stop', async (req, res) => {
     res.status(202).json({ status: agentManager.getStatus(req.params.id) });
   } catch (err) {
     sendError(res, err, req);
+=======
+    res.status(204).end();
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// --- Lifecycle ---
+app.post('/api/agents/:id/start', async (req, res) => {
+  try {
+    if (!store.get(req.params.id)) return res.status(404).json({ error: 'agent not found' });
+    await agentManager.start(req.params.id);
+    res.status(202).json({ status: agentManager.getStatus(req.params.id) });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/agents/:id/stop', (req, res) => {
+  try {
+    agentManager.stop(req.params.id);
+    res.status(202).json({ status: agentManager.getStatus(req.params.id) });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+>>>>>>> origin/main
   }
 });
 
 app.get('/api/agents/:id/logs', (req, res) => {
+<<<<<<< HEAD
   if (!store.get(req.params.id)) return sendError(res, new AppError(Codes.AGENT_NOT_FOUND, 'agent not found', 404), req);
   res.type('text/plain').send(agentManager.getLogs(req.params.id));
 });
@@ -515,6 +645,14 @@ app.post('/api/security/stores/:storeName/recover', (req, res) => {
 app.use((err, req, res, next) => {
   sendError(res, err, req);
 });
+=======
+  if (!store.get(req.params.id)) return res.status(404).json({ error: 'agent not found' });
+  res.type('text/plain').send(agentManager.getLogs(req.params.id));
+});
+
+const PORT = process.env.PORT || 4173;
+const HOST = process.env.HOST || '127.0.0.1';
+>>>>>>> origin/main
 
 server.listen(PORT, HOST, () => {
   console.log(`Rucker Park running at http://${HOST}:${PORT}`);
