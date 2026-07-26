@@ -20,11 +20,8 @@
     expandedActivity: new Set(),
     agentsShowingDetail: false, // mobile: list vs detail
     workstreamsShowingDetail: false,
-<<<<<<< HEAD
     security: { status: null, findings: [] },
     securityFilter: 'open',
-=======
->>>>>>> origin/main
   };
 
   const el = {
@@ -36,10 +33,7 @@
     viewWorkstreams: document.getElementById('view-workstreams'),
     viewAgents: document.getElementById('view-agents'),
     viewActivity: document.getElementById('view-activity'),
-<<<<<<< HEAD
     viewSecurity: document.getElementById('view-security'),
-=======
->>>>>>> origin/main
     modalOverlay: document.getElementById('modal-overlay'),
     modalTitle: document.getElementById('modal-title'),
     modalCancel: document.getElementById('modal-cancel'),
@@ -152,7 +146,6 @@
     return `<span class="status status-${workstreamStatusClass(status)}">${escapeHtml(status)}</span>`;
   }
 
-<<<<<<< HEAD
   function findingStatusLabel(status) {
     return { open: 'Open', acknowledged: 'Acknowledged', contained: 'Contained', resolved: 'Resolved' }[status] || status;
   }
@@ -161,8 +154,6 @@
     return { info: 'Info', warning: 'Warning', critical: 'Critical' }[sev] || sev;
   }
 
-=======
->>>>>>> origin/main
   // ---------------- API ----------------
 
   async function api(path, options) {
@@ -181,35 +172,24 @@
   function statusOf(id) { return state.statuses[id]?.status || 'idle'; }
 
   async function loadAll() {
-<<<<<<< HEAD
     const [summary, agents, activity, workstreams, securityStatus] = await Promise.all([
-=======
-    const [summary, agents, activity, workstreams] = await Promise.all([
->>>>>>> origin/main
       api('/api/summary'),
       api('/api/agents'),
       api('/api/activity?limit=80'),
       api('/api/workstreams'),
-<<<<<<< HEAD
       api('/api/security/status'),
-=======
->>>>>>> origin/main
     ]);
     state.summary = summary;
     state.agents = agents;
     state.activity = activity;
     state.workstreams = workstreams;
-<<<<<<< HEAD
     state.security.status = securityStatus;
-=======
->>>>>>> origin/main
     for (const a of agents) state.statuses[a.id] = { status: a.status || 'idle' };
     if (!state.selectedAgentId && agents.length) state.selectedAgentId = agents[0].id;
     if (!state.selectedWorkstreamId && workstreams.length) state.selectedWorkstreamId = workstreams[0].id;
     populateWorkstreamSelect();
   }
 
-<<<<<<< HEAD
   async function loadSecurity() {
     const [status, findings] = await Promise.all([
       api('/api/security/status'),
@@ -219,8 +199,6 @@
     state.security.findings = findings;
   }
 
-=======
->>>>>>> origin/main
   async function refreshData() {
     const [summary, agents, workstreams] = await Promise.all([
       api('/api/summary'),
@@ -246,13 +224,10 @@
     el.viewWorkstreams.classList.toggle('hidden', name !== 'workstreams');
     el.viewAgents.classList.toggle('hidden', name !== 'agents');
     el.viewActivity.classList.toggle('hidden', name !== 'activity');
-<<<<<<< HEAD
     el.viewSecurity.classList.toggle('hidden', name !== 'security');
     if (name === 'security') {
       loadSecurity().then(render);
     }
-=======
->>>>>>> origin/main
     render();
   }
 
@@ -291,15 +266,11 @@
       'run.completed': `${name} completed a run`,
       'run.cancelled': `${name}'s run was stopped`,
       'run.failed': `${name}'s run failed`,
-<<<<<<< HEAD
       'run.timed_out': `${name}'s run was stopped for exceeding its runtime limit`,
-=======
->>>>>>> origin/main
       'run.stop_requested': `Stop requested for ${name}`,
       'agent.created': `${name} was registered`,
       'agent.updated': `${name} was updated`,
       'agent.deleted': `${name} was deleted`,
-<<<<<<< HEAD
       'agent.workstream_changed': `${name} was moved between workstreams`,
       'workstream.created': `Workstream "${name}" was created`,
       'workstream.updated': `Workstream "${name}" was updated`,
@@ -349,22 +320,6 @@
     return base;
   }
 
-=======
-      'registry.external_modification_detected': 'Agent registry was modified outside the API',
-    };
-    return map[evt.action] || `${evt.action} — ${name}`;
-  }
-
-  function eventCategory(action) {
-    if (action === 'agent.created' || action === 'agent.updated' || action === 'agent.deleted') return 'changes';
-    if (action === 'run.completed') return 'completed';
-    if (action === 'run.failed') return 'failed';
-    if (action === 'run.cancelled') return 'cancelled';
-    if (action === 'registry.external_modification_detected') return 'integrity';
-    return 'runs';
-  }
-
->>>>>>> origin/main
   // Groups the same real events used elsewhere (humanizeEvent) into a short,
   // factual per-workstream line — a summary of what actually happened, not
   // an interpretation of intent, blockers, or quality.
@@ -1044,11 +999,7 @@
         <div class="activity-row-summary">
           <span class="time">${fmtDateTime(e.ts)}</span>
           <span class="flag-marker"></span>
-<<<<<<< HEAD
           <span class="desc"><strong>${escapeHtml(actorLabel(e.actor))}</strong> — ${escapeHtml(humanizeEvent(e))}</span>
-=======
-          <span class="desc"><strong>${escapeHtml(e.actor)}</strong> — ${escapeHtml(humanizeEvent(e))}</span>
->>>>>>> origin/main
           <span class="chevron">›</span>
         </div>
         <div class="activity-row-detail">
@@ -1065,7 +1016,6 @@
       </div>`;
   }
 
-<<<<<<< HEAD
   // ---------------- Security (Phase 10 — Sentinel findings + system health) ----------------
   // Read-only visibility plus the three operator-driven containment actions
   // (acknowledge/contain/resolve). There is deliberately no "run a scan" or
@@ -1213,8 +1163,6 @@
     }
   }
 
-=======
->>>>>>> origin/main
   // ---------------- Modal / form ----------------
 
   function fieldsForProvider(provider) {
@@ -1320,10 +1268,7 @@
     else if (state.view === 'workstreams') renderWorkstreams();
     else if (state.view === 'agents') renderAgents();
     else if (state.view === 'activity') renderActivity();
-<<<<<<< HEAD
     else if (state.view === 'security') renderSecurity();
-=======
->>>>>>> origin/main
   }
 
   // ---------------- WebSocket ----------------
@@ -1392,15 +1337,11 @@
   function renderSystemLine() {
     const s = state.summary;
     if (!s) return;
-<<<<<<< HEAD
     // "Healthy" now also reflects store integrity (Phase 5/7) — an
     // agent-only view of health would miss a tampered store with no
     // agents currently in an error state.
     const storesHealthy = state.security.status?.healthy !== false;
     const healthy = !s.needsAttention && storesHealthy;
-=======
-    const healthy = !s.needsAttention;
->>>>>>> origin/main
     el.systemLine.innerHTML = `<span class="${healthy ? 'healthy' : 'degraded'}">${healthy ? 'System healthy' : 'System needs attention'}</span> · <strong>${s.active}</strong> active · ${fmtCost(s.cost).compact} today`;
   }
 
@@ -1413,13 +1354,9 @@
     render();
     connectWS();
     setInterval(async () => {
-<<<<<<< HEAD
       const [summary, securityStatus] = await Promise.all([api('/api/summary'), api('/api/security/status')]);
       state.summary = summary;
       state.security.status = securityStatus;
-=======
-      state.summary = await api('/api/summary');
->>>>>>> origin/main
       renderSystemLine();
     }, 30000);
   })();

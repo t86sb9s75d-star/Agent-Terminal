@@ -1,6 +1,5 @@
 node_modules/
 data/agents.json
-<<<<<<< HEAD
 data/runs.json
 data/workstreams.json
 data/config_history.json
@@ -10,11 +9,6 @@ data/.*.hash.json
 data/.server.lock
 data/backups/
 data/*.corrupt-*
-=======
-data/.agents.hash
-data/runs.json
-data/events.jsonl
->>>>>>> origin/main
 data/logs/
 .env
 *.log

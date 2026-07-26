@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 const path = require('path');
 const crypto = require('crypto');
 
@@ -45,37 +44,6 @@ function writeAll(runs) {
 }
 
 function startRun({ agentId, provider, model, workstreamId, requestId }) {
-=======
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
-
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const RUNS_FILE = path.join(DATA_DIR, 'runs.json');
-const MAX_RUNS = 5000;
-
-function ensureFile() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(RUNS_FILE)) fs.writeFileSync(RUNS_FILE, '[]', 'utf8');
-}
-
-function readAll() {
-  ensureFile();
-  try {
-    return JSON.parse(fs.readFileSync(RUNS_FILE, 'utf8'));
-  } catch {
-    return [];
-  }
-}
-
-function writeAll(runs) {
-  ensureFile();
-  const trimmed = runs.length > MAX_RUNS ? runs.slice(runs.length - MAX_RUNS) : runs;
-  fs.writeFileSync(RUNS_FILE, JSON.stringify(trimmed, null, 2), 'utf8');
-}
-
-function startRun({ agentId, provider, model, workstreamId }) {
->>>>>>> origin/main
   const runs = readAll();
   const run = {
     id: crypto.randomUUID(),
@@ -87,39 +55,25 @@ function startRun({ agentId, provider, model, workstreamId }) {
     // attribution does not change — history stays accurate to what was
     // true when the work actually happened.
     workstreamId: workstreamId || null,
-<<<<<<< HEAD
     requestId: requestId || null,
     startedAt: Date.now(),
     endedAt: null,
     durationMs: null,
     status: 'running', // running | completed | error | cancelled | interrupted | timed_out
-=======
-    startedAt: Date.now(),
-    endedAt: null,
-    durationMs: null,
-    status: 'running', // running | completed | error | cancelled
->>>>>>> origin/main
     inputTokens: null,
     outputTokens: null,
     cachedTokens: null,
     costUsd: null,
     error: null,
-<<<<<<< HEAD
     outputTruncated: false,
     overBudgetCap: false,
-=======
->>>>>>> origin/main
   };
   runs.push(run);
   writeAll(runs);
   return run;
 }
 
-<<<<<<< HEAD
 function finishRun(runId, { status, inputTokens, outputTokens, cachedTokens, costUsd, error, outputTruncated, overBudgetCap }) {
-=======
-function finishRun(runId, { status, inputTokens, outputTokens, cachedTokens, costUsd, error }) {
->>>>>>> origin/main
   const runs = readAll();
   const idx = runs.findIndex((r) => r.id === runId);
   if (idx === -1) return null;
@@ -132,17 +86,13 @@ function finishRun(runId, { status, inputTokens, outputTokens, cachedTokens, cos
   run.cachedTokens = cachedTokens ?? null;
   run.costUsd = costUsd ?? null;
   run.error = error || null;
-<<<<<<< HEAD
   if (outputTruncated) run.outputTruncated = true;
   if (overBudgetCap) run.overBudgetCap = true;
-=======
->>>>>>> origin/main
   runs[idx] = run;
   writeAll(runs);
   return run;
 }
 
-<<<<<<< HEAD
 // Phase 3.5 — boot-time recovery for runs left `running` when the process
 // died (crash, kill, host reboot). Nothing survives a restart to say "this
 // was actually still in progress," so these are resolved to a distinct
@@ -173,8 +123,6 @@ function recoverInterruptedRuns({ actor, instanceId } = {}) {
   return { recoveredCount, recovered };
 }
 
-=======
->>>>>>> origin/main
 function listForAgent(agentId, limit = 50) {
   return readAll()
     .filter((r) => r.agentId === agentId)
@@ -212,12 +160,8 @@ function isToday(ts) {
 //   'unavailable' — billed-provider runs exist but none could be priced
 //
 // This must never collapse back into a single silently-partial number —
-<<<<<<< HEAD
 // see test/runsStore.pricing.test.js. UNCHANGED by the safety-foundation
 // work — this function's contract is load-bearing for existing tests.
-=======
-// see test/runsStore.pricing.test.js.
->>>>>>> origin/main
 function aggregateCost(finishedRuns) {
   const priceable = finishedRuns.filter((r) => r.provider !== 'custom');
   const priced = priceable.filter((r) => r.costUsd !== null && r.costUsd !== undefined);
@@ -243,12 +187,9 @@ function aggregateCost(finishedRuns) {
 // outcome (completed or error). A `cancelled` run was stopped by the
 // operator on purpose — that's neither a success nor a failure of
 // execution, and must not drag the rate down as if the system had failed.
-<<<<<<< HEAD
 // `interrupted`/`timed_out` runs are also excluded from this rate for the
 // same reason: neither reflects the execution itself succeeding or failing
 // on its own terms. UNCHANGED contract — see test/runsStore.executionSuccess.test.js.
-=======
->>>>>>> origin/main
 function executionSuccessRate(finishedRuns) {
   const scored = finishedRuns.filter((r) => r.status === 'completed' || r.status === 'error');
   if (scored.length === 0) return null;
@@ -261,10 +202,6 @@ function summarize() {
   const todayRuns = runs.filter((r) => isToday(r.startedAt) && r.status !== 'running');
   const finished = runs.filter((r) => r.status !== 'running');
   const completedToday = todayRuns.filter((r) => r.status === 'completed').length;
-<<<<<<< HEAD
-=======
-  const successCount = finished.filter((r) => r.status === 'completed').length;
->>>>>>> origin/main
   return {
     cost: aggregateCost(todayRuns),
     completedToday,
@@ -287,7 +224,6 @@ function summarizeForAgent(agentId) {
   };
 }
 
-<<<<<<< HEAD
 // Phase 5.2's "explicit operator recovery action" — see versionedStore.recover.
 // Distinct from recoverInterruptedRuns above: this is for the STORE FILE
 // being corrupt/tampered, not for individual runs left mid-execution.
@@ -308,6 +244,3 @@ module.exports = {
   aggregateCost,
   executionSuccessRate,
 };
-=======
-module.exports = { startRun, finishRun, listForAgent, listAll, summarize, summarizeForAgent, aggregateCost, executionSuccessRate };
->>>>>>> origin/main

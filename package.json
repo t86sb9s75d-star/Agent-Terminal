@@ -7,13 +7,9 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-<<<<<<< HEAD
     "test:unit": "node test/runsStore.pricing.test.js && node test/runsStore.executionSuccess.test.js && node test/workstreamsStore.test.js",
     "test:integration": "node test/integration.test.js",
     "test": "npm run test:unit && npm run test:integration"
-=======
-    "test": "node test/runsStore.pricing.test.js && node test/runsStore.executionSuccess.test.js && node test/workstreamsStore.test.js"
->>>>>>> origin/main
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",

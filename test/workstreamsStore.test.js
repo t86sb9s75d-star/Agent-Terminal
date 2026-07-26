@@ -117,7 +117,6 @@ check('no agents or runs for a workstream -> zeroed metrics, not an error', () =
   assert.strictEqual(metrics.executionSuccessRate, null);
 });
 
-<<<<<<< HEAD
 // ---------------- Phase 6.3 Option B: incidents outlive reassignment ----------------
 // Documented choice: a failure stays attached to the workstream where it
 // happened even after the responsible agent is reassigned elsewhere, until
@@ -156,6 +155,4 @@ check('Option B: a later successful run in the SAME workstream supersedes the fa
   assert.strictEqual(metrics.hasUnresolvedFailure, false);
 });
 
-=======
->>>>>>> origin/main
 console.log(`\n${passed} passed`);
