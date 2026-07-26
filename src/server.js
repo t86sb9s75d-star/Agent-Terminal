@@ -29,8 +29,39 @@ try {
   process.exit(1);
 }
 
+const PORT = process.env.PORT || 4173;
+const HOST = process.env.HOST || '127.0.0.1';
+
+// Additional failure mode — CSRF / browser-origin. There is no auth system
+// yet, and this server binds to localhost, but "localhost-only" does NOT
+// mean "safe from the browser": any webpage the operator has open in the
+// same browser can still blind-POST to http://127.0.0.1:PORT — the browser
+// only blocks the attacker's JS from READING the response, not from
+// sending the request in the first place. /start and /stop take no body,
+// so a plain cross-origin `fetch(..., {method:'POST'})` from any tab is a
+// "simple" request needing no CORS preflight and would otherwise reach the
+// server. Rejecting state-changing requests whose Origin header doesn't
+// match this server is a standard, low-cost mitigation that needs no
+// session/token infrastructure. Requests with NO Origin header (curl,
+// server-to-server, the X-Rucker-Client automation convention) are
+// allowed through — browsers reliably send Origin on cross-site
+// state-changing requests, so its absence here means a non-browser caller,
+// not a gap an attacker page can exploit.
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+function allowedOrigins() {
+  return new Set([`http://${HOST}:${PORT}`, `http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`]);
+}
+function originCheckMiddleware(req, res, next) {
+  if (SAFE_METHODS.has(req.method)) return next();
+  const origin = req.get('Origin');
+  if (!origin) return next();
+  if (allowedOrigins().has(origin)) return next();
+  res.status(403).json({ error: 'cross-origin request rejected', code: 'CROSS_ORIGIN_REJECTED', requestId: req.requestId || null });
+}
+
 const app = express();
 app.use(requestIdMiddleware);
+app.use(originCheckMiddleware);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
@@ -353,9 +384,6 @@ app.get('/api/agents/:id/logs', (req, res) => {
   if (!store.get(req.params.id)) return sendError(res, new AppError(Codes.AGENT_NOT_FOUND, 'agent not found', 404), req);
   res.type('text/plain').send(agentManager.getLogs(req.params.id));
 });
-
-const PORT = process.env.PORT || 4173;
-const HOST = process.env.HOST || '127.0.0.1';
 
 server.listen(PORT, HOST, () => {
   console.log(`Rucker Park running at http://${HOST}:${PORT}`);
