@@ -32,7 +32,7 @@ const { createVersionedStore } = require('./persistence/versionedStore');
 const { AppError, Codes } = require('./errors');
 const systemState = require('./systemState');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const DATA_DIR = process.env.RUCKER_DATA_DIR || path.join(__dirname, '..', 'data');
 const SCHEMA_VERSION = 1;
 
 const SEVERITIES = ['info', 'warning', 'critical'];

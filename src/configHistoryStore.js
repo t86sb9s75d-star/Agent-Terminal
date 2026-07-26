@@ -14,7 +14,7 @@
 const path = require('path');
 const { createVersionedStore } = require('./persistence/versionedStore');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const DATA_DIR = process.env.RUCKER_DATA_DIR || path.join(__dirname, '..', 'data');
 const SCHEMA_VERSION = 1;
 const TRACKED_FIELDS = ['name', 'role', 'workstreamId', 'provider', 'model', 'systemPrompt', 'task', 'command', 'maxTokens'];
 const REDACTED_FIELDS = new Set([]); // see module comment — add secret-bearing fields here before they ship

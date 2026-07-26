@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const { createChainedLog } = require('./persistence/chainedLog');
 const systemState = require('./systemState');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const DATA_DIR = process.env.RUCKER_DATA_DIR || path.join(__dirname, '..', 'data');
 const MAX_IN_MEMORY = 500;
 
 const recent = [];

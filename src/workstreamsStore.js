@@ -5,7 +5,7 @@ const { aggregateCost, executionSuccessRate } = require('./runsStore');
 const { createVersionedStore } = require('./persistence/versionedStore');
 const { AppError, Codes, requireString } = require('./errors');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const DATA_DIR = process.env.RUCKER_DATA_DIR || path.join(__dirname, '..', 'data');
 const SCHEMA_VERSION = 1;
 
 // Statuses a human can explicitly set. 'Archived' is not in this list — it's

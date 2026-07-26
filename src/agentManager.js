@@ -15,7 +15,7 @@ const { AppError, Codes } = require('./errors');
 const budget = require('./budget');
 const sentinel = require('./sentinel');
 
-const LOGS_DIR = path.join(__dirname, '..', 'data', 'logs');
+const LOGS_DIR = path.join(process.env.RUCKER_DATA_DIR || path.join(__dirname, '..', 'data'), 'logs');
 const MAX_BUFFER_LINES = 2000;
 
 // id -> { status, startedAt, abortController, child, buffer: [], runId }

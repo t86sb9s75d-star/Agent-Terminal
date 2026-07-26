@@ -19,7 +19,7 @@ const { idempotencyMiddleware } = require('./idempotency');
 const { AppError, Codes } = require('./errors');
 const { requestIdMiddleware, actorFromRequest, SYSTEM_ACTOR, RECOVERY_ACTOR } = require('./actor');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const DATA_DIR = process.env.RUCKER_DATA_DIR || path.join(__dirname, '..', 'data');
 
 // Additional failure mode — refuse to start a second instance against the
 // same data directory; every store here assumes single-process ownership

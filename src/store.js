@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const { createVersionedStore } = require('./persistence/versionedStore');
 const { AppError, Codes, requireString, optionalString } = require('./errors');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const DATA_DIR = process.env.RUCKER_DATA_DIR || path.join(__dirname, '..', 'data');
 const SCHEMA_VERSION = 1;
 const VALID_PROVIDERS = ['anthropic', 'openai', 'custom'];
 
