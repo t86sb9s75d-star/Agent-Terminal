@@ -61,6 +61,10 @@ was actually checked:
 | Disk-full behavior | Not verified | Not exercised — would require actually filling the test environment's disk, which was avoided as unnecessarily disruptive to this session's environment |
 | Clock dependence (system clock changes affecting timestamps/windows) | Not verified | Sentinel's time-window rules (`Date.now()` deltas) and `isToday()` in `runsStore.js` both assume a monotonic, correct system clock; behavior under clock skew or DST transitions was not tested |
 | Partial multi-store update consistency | Code-inspection supported | Documented as a known, accepted boundary in `docs/ARCHITECTURE.md` ("no cross-store transactions") rather than fixed — a crash between an agent write and its audit-log entry is a real, named gap |
+| 10 truly concurrent `/start` requests for one agent never double-start it | Automated-test verified + Live runtime verified | `test/integration.test.js`, manual `Promise.all`/parallel-curl test — exactly 1 of 10 succeeds, the other 9 get a clean `RUN_ALREADY_ACTIVE` |
+| Malformed JSON body does not leak a stack trace or filesystem paths | Automated-test verified + Live runtime verified | **Found and fixed during adversarial self-review** — previously fell through to Express's default HTML error page with a full stack trace; now returns the same stable `{error, code, requestId}` shape as every other endpoint. `test/integration.test.js` |
+| Oversized request body is rejected without crashing the process | Live runtime verified | Manual test: 5MB JSON body → 413, server remained responsive immediately after |
+| Null/empty POST body | Live runtime verified | Manual test: clean 400 `VALIDATION_ERROR`, not a crash |
 | **Frontend (Phase 10 + actor rendering)** | | |
 | Structured actor rendering in Activity view | Live runtime verified | Playwright test: page loads, no console errors, correct label text |
 | Security view: health banner, findings list, filters | Live runtime verified | Playwright, screenshots reviewed |
@@ -73,6 +77,7 @@ was actually checked:
 `npm test` = `test/runsStore.pricing.test.js` (6 cases) +
 `test/runsStore.executionSuccess.test.js` (5 cases) +
 `test/workstreamsStore.test.js` (15 cases, includes 3 Option B cases) +
-`test/integration.test.js` (14 cases, spawning real server processes
-against throwaway data directories). **27 unit + 14 integration = 41
-tests, all passing** as of the final commit on this branch.
+`test/integration.test.js` (16 cases, spawning real server processes
+against throwaway data directories, including the two adversarial-review
+cases above). **27 unit + 16 integration = 43 tests, all passing** as of
+the final commit on this branch.
