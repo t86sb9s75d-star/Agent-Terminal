@@ -117,4 +117,42 @@ check('no agents or runs for a workstream -> zeroed metrics, not an error', () =
   assert.strictEqual(metrics.executionSuccessRate, null);
 });
 
+// ---------------- Phase 6.3 Option B: incidents outlive reassignment ----------------
+// Documented choice: a failure stays attached to the workstream where it
+// happened even after the responsible agent is reassigned elsewhere, until
+// an operator explicitly resolves it. This is the opposite of Option A
+// (status auto-clears the moment the agent leaves), which was rejected
+// because it lets a real unresolved failure quietly vanish from view.
+
+check('Option B: failure stays Blocked-visible after the agent is reassigned away', () => {
+  // Agent is now a member of B, but its last run in A was a failure.
+  const agents = [agent('a1', 'B')];
+  const runs = [run('a1', 'A', 'error', { startedAt: 1000, id: 'run-1' })];
+  const metrics = computeMetrics('A', { agents, runs });
+  assert.strictEqual(metrics.hasUnresolvedFailure, true);
+  assert.deepStrictEqual(metrics.unresolvedFailureRunIds, ['run-1']);
+});
+
+check('Option B: explicit resolution clears the failure even without a new run', () => {
+  const agents = [agent('a1', 'B')];
+  const failingRun = run('a1', 'A', 'error', { startedAt: 1000, id: 'run-to-resolve' });
+  const runs = [failingRun];
+  const unresolved = computeMetrics('A', { agents, runs });
+  assert.strictEqual(unresolved.hasUnresolvedFailure, true);
+
+  const resolved = computeMetrics('A', { agents, runs, resolvedFailureRunIds: ['run-to-resolve'] });
+  assert.strictEqual(resolved.hasUnresolvedFailure, false);
+  assert.deepStrictEqual(resolved.unresolvedFailureRunIds, []);
+});
+
+check('Option B: a later successful run in the SAME workstream supersedes the failure', () => {
+  const agents = [agent('a1', 'B')];
+  const runs = [
+    run('a1', 'A', 'error', { startedAt: 1000 }),
+    run('a1', 'A', 'completed', { startedAt: 2000 }),
+  ];
+  const metrics = computeMetrics('A', { agents, runs });
+  assert.strictEqual(metrics.hasUnresolvedFailure, false);
+});
+
 console.log(`\n${passed} passed`);
