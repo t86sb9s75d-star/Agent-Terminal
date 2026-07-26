@@ -771,6 +771,40 @@ button { font-family: inherit; font-size: inherit; color: inherit; }
 .activity-row.new-event { animation: new-event-in 1.6s var(--ease-out); }
 
 /* ============================================================
+   Security view (Sentinel findings + system health)
+   ============================================================ */
+
+.security-health {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  margin-bottom: var(--space-5);
+  border-bottom: 1px solid var(--border);
+}
+
+.security-health-note { color: var(--text-muted); font-size: var(--text-small); }
+.security-health.bad .security-health-note { color: var(--red); }
+
+.security-actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+/* Security findings are always fully expanded — there is no click-to-
+   reveal interaction here, unlike Activity rows, so the shared
+   .activity-row-detail's collapsed-by-default / height-capped styling
+   (meant for short key-value summaries) is overridden for this list. */
+#security-list .activity-row-detail {
+  display: block;
+  max-height: none;
+  overflow: visible;
+  opacity: 1;
+}
+#security-list .activity-row-summary { cursor: default; }
+
+/* ============================================================
    Modal / Confirm dialog
    ============================================================ */
 

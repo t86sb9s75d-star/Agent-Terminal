@@ -20,6 +20,8 @@
     expandedActivity: new Set(),
     agentsShowingDetail: false, // mobile: list vs detail
     workstreamsShowingDetail: false,
+    security: { status: null, findings: [] },
+    securityFilter: 'open',
   };
 
   const el = {
@@ -31,6 +33,7 @@
     viewWorkstreams: document.getElementById('view-workstreams'),
     viewAgents: document.getElementById('view-agents'),
     viewActivity: document.getElementById('view-activity'),
+    viewSecurity: document.getElementById('view-security'),
     modalOverlay: document.getElementById('modal-overlay'),
     modalTitle: document.getElementById('modal-title'),
     modalCancel: document.getElementById('modal-cancel'),
@@ -143,6 +146,14 @@
     return `<span class="status status-${workstreamStatusClass(status)}">${escapeHtml(status)}</span>`;
   }
 
+  function findingStatusLabel(status) {
+    return { open: 'Open', acknowledged: 'Acknowledged', contained: 'Contained', resolved: 'Resolved' }[status] || status;
+  }
+
+  function severityLabel(sev) {
+    return { info: 'Info', warning: 'Warning', critical: 'Critical' }[sev] || sev;
+  }
+
   // ---------------- API ----------------
 
   async function api(path, options) {
@@ -161,20 +172,31 @@
   function statusOf(id) { return state.statuses[id]?.status || 'idle'; }
 
   async function loadAll() {
-    const [summary, agents, activity, workstreams] = await Promise.all([
+    const [summary, agents, activity, workstreams, securityStatus] = await Promise.all([
       api('/api/summary'),
       api('/api/agents'),
       api('/api/activity?limit=80'),
       api('/api/workstreams'),
+      api('/api/security/status'),
     ]);
     state.summary = summary;
     state.agents = agents;
     state.activity = activity;
     state.workstreams = workstreams;
+    state.security.status = securityStatus;
     for (const a of agents) state.statuses[a.id] = { status: a.status || 'idle' };
     if (!state.selectedAgentId && agents.length) state.selectedAgentId = agents[0].id;
     if (!state.selectedWorkstreamId && workstreams.length) state.selectedWorkstreamId = workstreams[0].id;
     populateWorkstreamSelect();
+  }
+
+  async function loadSecurity() {
+    const [status, findings] = await Promise.all([
+      api('/api/security/status'),
+      api('/api/security/findings'),
+    ]);
+    state.security.status = status;
+    state.security.findings = findings;
   }
 
   async function refreshData() {
@@ -202,6 +224,10 @@
     el.viewWorkstreams.classList.toggle('hidden', name !== 'workstreams');
     el.viewAgents.classList.toggle('hidden', name !== 'agents');
     el.viewActivity.classList.toggle('hidden', name !== 'activity');
+    el.viewSecurity.classList.toggle('hidden', name !== 'security');
+    if (name === 'security') {
+      loadSecurity().then(render);
+    }
     render();
   }
 
@@ -990,6 +1016,119 @@
       </div>`;
   }
 
+  // ---------------- Security (Phase 10 — Sentinel findings + system health) ----------------
+  // Read-only visibility plus the three operator-driven containment actions
+  // (acknowledge/contain/resolve). There is deliberately no "run a scan" or
+  // any button that has Sentinel take an action on its own — see
+  // src/sentinel.js. Containment's "also stop the agent" is a separate,
+  // explicit checkbox, never implied by clicking Contain.
+
+  const SECURITY_FILTERS = [
+    { key: 'open', label: 'Open' },
+    { key: 'acknowledged', label: 'Acknowledged' },
+    { key: 'contained', label: 'Contained' },
+    { key: 'resolved', label: 'Resolved' },
+    { key: 'all', label: 'All' },
+  ];
+
+  function renderSecurity() {
+    const sec = state.security;
+    const healthy = sec.status?.healthy !== false;
+    const degraded = sec.status?.degraded || [];
+
+    el.viewSecurity.innerHTML = `
+      <div class="view-header"><h2 class="view-heading">Security</h2></div>
+      <div class="security-health ${healthy ? 'ok' : 'bad'}">
+        <span class="status ${healthy ? 'status-completed' : 'status-error'}">${healthy ? 'Healthy' : 'Degraded'}</span>
+        <span class="security-health-note">
+          ${healthy
+            ? 'All stores pass integrity checks.'
+            : degraded.map((d) => `${escapeHtml(d.subsystem)}: ${escapeHtml(d.reason)}`).join(' · ')}
+        </span>
+      </div>
+      <div class="activity-toolbar segmented" id="security-filter">
+        ${SECURITY_FILTERS.map((f) => `<button type="button" data-filter="${f.key}" class="${f.key === state.securityFilter ? 'active' : ''}">${f.label}</button>`).join('')}
+      </div>
+      <div id="security-list"></div>
+    `;
+    animateEnter(el.viewSecurity);
+
+    document.getElementById('security-filter').querySelectorAll('button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.securityFilter = btn.dataset.filter;
+        document.querySelectorAll('#security-filter button').forEach((b) => b.classList.toggle('active', b === btn));
+        renderSecurityList();
+      });
+    });
+    renderSecurityList();
+  }
+
+  function renderSecurityList() {
+    const listEl = document.getElementById('security-list');
+    if (!listEl) return;
+    const findings = state.securityFilter === 'all'
+      ? state.security.findings
+      : state.security.findings.filter((f) => f.status === state.securityFilter);
+
+    if (findings.length === 0) {
+      listEl.innerHTML = EmptyState(
+        state.securityFilter === 'open' ? 'No open findings. Sentinel has not flagged anything requiring attention.' : 'No findings in this category.'
+      );
+      return;
+    }
+
+    listEl.innerHTML = findings.map((f) => `
+      <div class="activity-row${f.severity === 'critical' ? ' flagged' : ''}" data-finding-id="${f.id}">
+        <div class="activity-row-summary">
+          <span class="time">${fmtDateTime(f.createdAt)}</span>
+          <span class="flag-marker"></span>
+          <span class="desc"><strong>${severityLabel(f.severity)}</strong> — ${escapeHtml(f.summary)}</span>
+          <span class="status status-${f.status === 'resolved' ? 'completed' : f.status === 'contained' ? 'cancelled' : f.status === 'acknowledged' ? 'idle' : 'error'}">${findingStatusLabel(f.status)}</span>
+        </div>
+        <div class="activity-row-detail">
+          ${DataRow('Rule', escapeHtml(f.ruleId))}
+          ${DataRow('Category', escapeHtml(f.category))}
+          ${DataRow('Entity', `${escapeHtml(f.entityType)}: ${escapeHtml(f.entityId)}`)}
+          ${f.suggestedAction ? DataRow('Suggested action', escapeHtml(f.suggestedAction)) : ''}
+          ${DataRow('Evidence', `<pre style="white-space:pre-wrap;font-size:11px;margin:0;">${escapeHtml(JSON.stringify(f.evidence, null, 2))}</pre>`)}
+          ${DataRow('History', f.statusHistory.map((h) => `${findingStatusLabel(h.status)} (${actorLabel(h.actor)}${h.note ? `: ${escapeHtml(h.note)}` : ''})`).join(' → '))}
+          <div class="security-actions">
+            ${f.status === 'open' ? `<button type="button" class="btn" data-action="acknowledge" data-id="${f.id}">Acknowledge</button>` : ''}
+            ${f.status !== 'contained' && f.status !== 'resolved' ? `<button type="button" class="btn" data-action="contain" data-id="${f.id}" data-entity-type="${escapeHtml(f.entityType)}" data-entity-id="${escapeHtml(f.entityId)}">Contain</button>` : ''}
+            ${f.status !== 'resolved' ? `<button type="button" class="btn btn-primary" data-action="resolve" data-id="${f.id}">Resolve</button>` : ''}
+          </div>
+        </div>
+      </div>`).join('');
+
+    listEl.querySelectorAll('[data-action]').forEach((btn) => {
+      btn.addEventListener('click', () => handleSecurityAction(btn));
+    });
+  }
+
+  async function handleSecurityAction(btn) {
+    const { action, id } = btn.dataset;
+    try {
+      if (action === 'acknowledge') {
+        await api(`/api/security/findings/${id}/acknowledge`, { method: 'POST', body: JSON.stringify({}) });
+      } else if (action === 'resolve') {
+        await api(`/api/security/findings/${id}/resolve`, { method: 'POST', body: JSON.stringify({}) });
+      } else if (action === 'contain') {
+        // stopAgent is a SEPARATE, explicit opt-in — containing a finding
+        // never silently kills a run the operator didn't ask to stop.
+        const entityType = btn.dataset.entityType;
+        let stopAgent = false;
+        if (entityType === 'agent') {
+          stopAgent = window.confirm('Also stop this agent if it is currently running? OK = stop it, Cancel = mark contained only.');
+        }
+        await api(`/api/security/findings/${id}/contain`, { method: 'POST', body: JSON.stringify({ stopAgent }) });
+      }
+      await loadSecurity();
+      renderSecurity();
+    } catch (err) {
+      window.alert(err.message);
+    }
+  }
+
   // ---------------- Modal / form ----------------
 
   function fieldsForProvider(provider) {
@@ -1095,6 +1234,7 @@
     else if (state.view === 'workstreams') renderWorkstreams();
     else if (state.view === 'agents') renderAgents();
     else if (state.view === 'activity') renderActivity();
+    else if (state.view === 'security') renderSecurity();
   }
 
   // ---------------- WebSocket ----------------
@@ -1163,7 +1303,11 @@
   function renderSystemLine() {
     const s = state.summary;
     if (!s) return;
-    const healthy = !s.needsAttention;
+    // "Healthy" now also reflects store integrity (Phase 5/7) — an
+    // agent-only view of health would miss a tampered store with no
+    // agents currently in an error state.
+    const storesHealthy = state.security.status?.healthy !== false;
+    const healthy = !s.needsAttention && storesHealthy;
     el.systemLine.innerHTML = `<span class="${healthy ? 'healthy' : 'degraded'}">${healthy ? 'System healthy' : 'System needs attention'}</span> · <strong>${s.active}</strong> active · ${fmtCost(s.cost).compact} today`;
   }
 
@@ -1176,7 +1320,9 @@
     render();
     connectWS();
     setInterval(async () => {
-      state.summary = await api('/api/summary');
+      const [summary, securityStatus] = await Promise.all([api('/api/summary'), api('/api/security/status')]);
+      state.summary = summary;
+      state.security.status = securityStatus;
       renderSystemLine();
     }, 30000);
   })();
