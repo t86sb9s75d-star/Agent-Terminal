@@ -55,8 +55,17 @@ function getAllStatuses() {
   return out;
 }
 
+// Additional failure mode — path traversal. `id` reaches here from
+// req.params.id, an ordinary Express route param with no format
+// enforcement; a caller passing e.g. "../../../../tmp/evil" as an agent id
+// would otherwise make this resolve OUTSIDE LOGS_DIR entirely (verified:
+// path.join(LOGS_DIR, '../../../../tmp/evil.log') escapes LOGS_DIR).
+// discard() unlinks whatever this returns, on a caller-supplied id, before
+// even checking the agent exists — path.basename strips any directory
+// component so the result can never leave LOGS_DIR, regardless of what's
+// in `id` or which call site forgot to validate it first.
 function logFilePath(id) {
-  return path.join(LOGS_DIR, `${id}.log`);
+  return path.join(LOGS_DIR, `${path.basename(String(id))}.log`);
 }
 
 function appendLog(id, chunk) {

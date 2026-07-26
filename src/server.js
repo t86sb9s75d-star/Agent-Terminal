@@ -306,6 +306,7 @@ app.put('/api/agents/:id', (req, res) => {
 app.delete('/api/agents/:id', (req, res) => {
   try {
     const agent = store.get(req.params.id);
+    if (!agent) throw new AppError(Codes.AGENT_NOT_FOUND, 'agent not found', 404);
     agentManager.discard(req.params.id);
     store.remove(req.params.id);
     const actor = actorFromRequest(req);
