@@ -1,10 +1,18 @@
 // Rolling backup retention for critical JSON stores (Phase 3.3).
 //
-// Policy (documented, not just implemented):
-//   - A backup is written immediately BEFORE every successful atomic write
-//     of a new version, capturing the version being replaced (not the new
-//     one) — so a backup always represents a version that was itself
-//     written successfully and passed validation at the time.
+// Policy (documented, not just implemented — verified against real file
+// contents in test/integration.test.js and by direct inspection: two
+// writes in sequence, corrupt the primary file, restore_backup, confirm
+// the SECOND write's content comes back, not the first):
+//   - A backup is written immediately AFTER every successful atomic write
+//     of a new version, capturing the version that was JUST written (not
+//     the one it replaced) — see versionedStore.js's persist(). Backing up
+//     the outgoing version instead would mean the most recently written
+//     state is never itself backed up, so a corruption immediately after a
+//     legitimate write could roll back further than the operator expects.
+//     (This was an actual bug, caught and fixed before this comment was —
+//     this file's header previously described the pre-fix, backwards
+//     behavior even though the code had already been corrected.)
 //   - Retention: current live file + up to `retainCount` (default 5) most
 //     recent timestamped backups. Older ones are pruned automatically.
 //   - Backups live in data/backups/<storeName>/ as

@@ -544,6 +544,218 @@ async function run() {
     }
   });
 
+  // ---------------- Post-merge stabilization pass regression tests ----------------
+  // Each of these corresponds to a specific finding from the PR #3 review
+  // (Copilot) or the follow-up stabilization audit. See the stabilization
+  // report for the finding-to-fix mapping.
+
+  await check('[Finding A] resolving a workstream incident actually clears hasUnresolvedFailure via the API', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const ws = await (await fetch(`${server.baseUrl}/api/workstreams`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'WS' }),
+      })).json();
+      const agent = await (await fetch(`${server.baseUrl}/api/agents`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'A', provider: 'custom', command: 'exit 1', workstreamId: ws.id }),
+      })).json();
+      await fetch(`${server.baseUrl}/api/agents/${agent.id}/start`, { method: 'POST' });
+      await new Promise((r) => setTimeout(r, 600));
+
+      const runId = (await (await fetch(`${server.baseUrl}/api/agents/${agent.id}/runs`)).json()).runs[0].id;
+
+      const before = await (await fetch(`${server.baseUrl}/api/workstreams/${ws.id}`)).json();
+      assert.strictEqual(before.hasUnresolvedFailure, true);
+
+      await fetch(`${server.baseUrl}/api/workstreams/${ws.id}/resolve/${runId}`, { method: 'POST' });
+
+      const afterSingle = await (await fetch(`${server.baseUrl}/api/workstreams/${ws.id}`)).json();
+      assert.strictEqual(afterSingle.hasUnresolvedFailure, false, 'GET /api/workstreams/:id must reflect the resolution');
+      assert.deepStrictEqual(afterSingle.unresolvedFailureRunIds, []);
+
+      const afterList = (await (await fetch(`${server.baseUrl}/api/workstreams`)).json())[0];
+      assert.strictEqual(afterList.hasUnresolvedFailure, false, 'GET /api/workstreams (list) must also reflect the resolution');
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('[Finding B] whitespace-only task/command is rejected for every provider', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const post = (body) => fetch(`${server.baseUrl}/api/agents`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+
+      for (const blank of ['   ', '\t\n', '\n\n  \t']) {
+        const customRes = await post({ name: 'C', provider: 'custom', command: blank });
+        assert.strictEqual(customRes.status, 400, `custom command "${JSON.stringify(blank)}" must be rejected`);
+        const anthropicRes = await post({ name: 'A', provider: 'anthropic', task: blank });
+        assert.strictEqual(anthropicRes.status, 400, `anthropic task "${JSON.stringify(blank)}" must be rejected`);
+        const openaiRes = await post({ name: 'O', provider: 'openai', task: blank });
+        assert.strictEqual(openaiRes.status, 400, `openai task "${JSON.stringify(blank)}" must be rejected`);
+      }
+
+      // valid, real content must still work
+      const validRes = await post({ name: 'Valid', provider: 'custom', command: 'echo hi' });
+      assert.strictEqual(validRes.status, 201);
+
+      const agents = await (await fetch(`${server.baseUrl}/api/agents`)).json();
+      assert.strictEqual(agents.length, 1, 'none of the blank-content requests should have created an agent');
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('[Finding C] switching provider without that provider\'s required field is rejected, with the required field it succeeds', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const agent = await (await fetch(`${server.baseUrl}/api/agents`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Switcher', provider: 'anthropic', task: 'a real task' }),
+      })).json();
+
+      const put = (body) => fetch(`${server.baseUrl}/api/agents/${agent.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+
+      const rejected = await put({ provider: 'custom' });
+      assert.strictEqual(rejected.status, 400);
+
+      const unchanged = await (await fetch(`${server.baseUrl}/api/agents/${agent.id}`)).json();
+      assert.strictEqual(unchanged.provider, 'anthropic', 'a rejected update must not partially mutate the stored agent');
+
+      const accepted = await put({ provider: 'custom', command: 'echo hi' });
+      assert.strictEqual(accepted.status, 200);
+      const final = await accepted.json();
+      assert.strictEqual(final.provider, 'custom');
+      assert.strictEqual(final.command, 'echo hi');
+
+      // custom -> paid provider without task must also be rejected
+      const agent2 = await (await fetch(`${server.baseUrl}/api/agents`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Switcher2', provider: 'custom', command: 'echo hi' }),
+      })).json();
+      const rejected2 = await fetch(`${server.baseUrl}/api/agents/${agent2.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'openai' }),
+      });
+      assert.strictEqual(rejected2.status, 400);
+
+      // provider unchanged, unrelated partial update still works
+      const renamed = await fetch(`${server.baseUrl}/api/agents/${agent2.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Renamed' }),
+      });
+      assert.strictEqual(renamed.status, 200);
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('[Finding D] a backup captures the just-written content, not the version it replaced', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const agent = await (await fetch(`${server.baseUrl}/api/agents`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Original Name', provider: 'custom', command: 'echo hi' }),
+      })).json();
+      await fetch(`${server.baseUrl}/api/agents/${agent.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Renamed After Backup' }),
+      });
+
+      // Corrupt the primary file and restore from backup — the restored
+      // content must reflect the SECOND (latest) write, not the first.
+      fs.writeFileSync(path.join(dataDir, 'agents.json'), 'not valid json');
+      await fetch(`${server.baseUrl}/api/agents`); // trigger detection
+      const recoverRes = await fetch(`${server.baseUrl}/api/security/stores/agents/recover`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ resolution: 'restore_backup' }),
+      });
+      assert.strictEqual(recoverRes.status, 200);
+
+      const restored = await (await fetch(`${server.baseUrl}/api/agents`)).json();
+      assert.strictEqual(restored[0].name, 'Renamed After Backup', 'restore_backup must recover the latest write, not the version it replaced');
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('maxTokens rejects NaN, negative, and zero; accepts valid positive integers', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const post = (maxTokens) => fetch(`${server.baseUrl}/api/agents`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'T', provider: 'custom', command: 'echo hi', maxTokens }),
+      });
+
+      for (const bad of ['abc', -50, 0, NaN, Infinity]) {
+        const res = await post(bad);
+        assert.strictEqual(res.status, 400, `maxTokens=${bad} must be rejected`);
+      }
+
+      const goodRes = await post(2048);
+      assert.strictEqual(goodRes.status, 201);
+      const good = await goodRes.json();
+      assert.strictEqual(good.maxTokens, 2048);
+
+      const defaultRes = await fetch(`${server.baseUrl}/api/agents`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Default', provider: 'custom', command: 'echo hi' }),
+      });
+      const defaulted = await defaultRes.json();
+      assert.strictEqual(defaulted.maxTokens, 1024, 'omitting maxTokens must still default to 1024');
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('reusing an Idempotency-Key with a different payload is a 409 conflict, not a silently wrong replay', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const headers = { 'Content-Type': 'application/json', 'Idempotency-Key': 'reused-key' };
+
+      const first = await fetch(`${server.baseUrl}/api/agents`, {
+        method: 'POST', headers, body: JSON.stringify({ name: 'Agent A', provider: 'custom', command: 'echo A' }),
+      });
+      assert.strictEqual(first.status, 201);
+
+      const sameRetry = await fetch(`${server.baseUrl}/api/agents`, {
+        method: 'POST', headers, body: JSON.stringify({ name: 'Agent A', provider: 'custom', command: 'echo A' }),
+      });
+      assert.strictEqual(sameRetry.status, 201);
+      assert.strictEqual(sameRetry.headers.get('idempotent-replay'), 'true');
+
+      const differentPayload = await fetch(`${server.baseUrl}/api/agents`, {
+        method: 'POST', headers, body: JSON.stringify({ name: 'Agent B', provider: 'custom', command: 'echo B' }),
+      });
+      assert.strictEqual(differentPayload.status, 409);
+      const conflictBody = await differentPayload.json();
+      assert.strictEqual(conflictBody.code, 'IDEMPOTENCY_CONFLICT');
+
+      const agents = await (await fetch(`${server.baseUrl}/api/agents`)).json();
+      assert.strictEqual(agents.length, 1, 'the conflicting request must not have silently created "Agent B"');
+      assert.strictEqual(agents[0].name, 'Agent A');
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   console.log(`\n${passed} passed, ${failures.length} failed`);
   if (failures.length > 0) {
     for (const f of failures) console.error(`FAILED: ${f.name}\n${f.err.stack}`);

@@ -97,6 +97,45 @@ function validateAgentShape(data, { partial }) {
   }
 }
 
+// A whitespace-only string (" ", "\t\n") is not a value — `optionalString`
+// only type-checks, so `!optionalString(x)` treats "   " as "provided"
+// (truthy). Content emptiness must be checked separately from type.
+function isBlank(value) {
+  return typeof value !== 'string' || value.trim() === '';
+}
+
+// `Number("abc")` is NaN, which JSON.stringify silently turns into `null`
+// on the way back out — an operator typo would otherwise be stored as if
+// it were a deliberate "no value" rather than rejected. `Number(-50)` is
+// a valid finite number but not a sane token limit. Both must be rejected
+// explicitly rather than silently coerced or passed through to the
+// provider SDK, which would fail unpredictably downstream instead of
+// with a clear validation error here.
+function validateMaxTokens(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+    throw new AppError(Codes.VALIDATION_ERROR, 'maxTokens must be a positive integer');
+  }
+  return n;
+}
+
+// Single source of truth for "is this agent config valid for its
+// provider," used by both create() and update() so the two can't drift
+// apart — update() applies this to the FINAL merged config (new provider
+// + whatever task/command result from the request), not just whatever
+// fields happened to be present in this particular request body, so
+// switching provider without also supplying that provider's required
+// field is rejected instead of silently persisting a config that can
+// never actually run.
+function assertProviderRequirements(provider, { task, command }) {
+  if (provider === 'custom' && isBlank(command)) {
+    throw new AppError(Codes.VALIDATION_ERROR, 'command is required for custom agents');
+  }
+  if (provider !== 'custom' && isBlank(task)) {
+    throw new AppError(Codes.VALIDATION_ERROR, 'task is required for anthropic/openai agents');
+  }
+}
+
 function create(data) {
   if (typeof data !== 'object' || data === null) {
     throw new AppError(Codes.VALIDATION_ERROR, 'request body must be an object');
@@ -105,12 +144,9 @@ function create(data) {
   if (!VALID_PROVIDERS.includes(data.provider)) {
     throw new AppError(Codes.VALIDATION_ERROR, `provider must be one of: ${VALID_PROVIDERS.join(', ')}`);
   }
-  if (data.provider === 'custom' && !optionalString(data.command, 'command')) {
-    throw new AppError(Codes.VALIDATION_ERROR, 'command is required for custom agents');
-  }
-  if (data.provider !== 'custom' && !optionalString(data.task, 'task')) {
-    throw new AppError(Codes.VALIDATION_ERROR, 'task is required for anthropic/openai agents');
-  }
+  const task = optionalString(data.task, 'task'); // type-check; blankness checked below
+  const command = optionalString(data.command, 'command');
+  assertProviderRequirements(data.provider, { task, command });
   const role = optionalString(data.role, 'role');
   const workstreamId = data.workstreamId || null;
   assertWorkstreamExists(workstreamId);
@@ -124,9 +160,9 @@ function create(data) {
     provider: data.provider,
     model: data.model || null,
     systemPrompt: data.systemPrompt || '',
-    task: data.task || '',
-    command: data.command || '',
-    maxTokens: data.maxTokens ? Number(data.maxTokens) : 1024,
+    task: task || '',
+    command: command || '',
+    maxTokens: data.maxTokens !== undefined ? validateMaxTokens(data.maxTokens) : 1024,
     workstreamId,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -157,6 +193,17 @@ function update(id, data) {
     assertNotArchived(workstreamId); // moving INTO an archived workstream is blocked; leaving one is always fine
   }
 
+  // Validated against the FINAL merged task/command and the FINAL
+  // provider — not just whatever fields this particular request happened
+  // to include. Switching provider without also supplying that
+  // provider's required field (e.g. provider -> "custom" with no
+  // command, or provider -> "anthropic" with no task) is rejected here,
+  // before anything is written, rather than persisting a config that can
+  // never actually run.
+  const task = data.task !== undefined ? optionalString(data.task, 'task') : existing.task;
+  const command = data.command !== undefined ? optionalString(data.command, 'command') : existing.command;
+  assertProviderRequirements(provider, { task, command });
+
   const updated = {
     ...existing,
     name,
@@ -164,9 +211,9 @@ function update(id, data) {
     provider,
     model: data.model !== undefined ? data.model : existing.model,
     systemPrompt: data.systemPrompt !== undefined ? data.systemPrompt : existing.systemPrompt,
-    task: data.task !== undefined ? data.task : existing.task,
-    command: data.command !== undefined ? data.command : existing.command,
-    maxTokens: data.maxTokens !== undefined ? Number(data.maxTokens) : existing.maxTokens,
+    task: task || '',
+    command: command || '',
+    maxTokens: data.maxTokens !== undefined ? validateMaxTokens(data.maxTokens) : existing.maxTokens,
     workstreamId,
     updatedAt: new Date().toISOString(),
   };

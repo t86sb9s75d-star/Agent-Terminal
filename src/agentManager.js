@@ -156,7 +156,17 @@ async function start(id, actor = SYSTEM_ACTOR) {
   }, maxRuntimeMs);
 
   const ABORT_ERROR_NAMES = new Set(['AbortError', 'APIUserAbortError']);
+  let finished = false;
   const finish = (err, usage) => {
+    // Idempotency guard: finish() must finalize a run exactly once. Without
+    // this, an exception thrown INSIDE finish() itself (e.g. an unexpected
+    // error logging or writing) would be caught by the .catch() in the
+    // promise chain below and call finish() a second time — re-finalizing
+    // an already-finalized run, potentially with a conflicting status
+    // (e.g. a cleanly cancelled run overwritten to "error").
+    if (finished) return;
+    finished = true;
+
     clearTimeout(runtimeTimer);
     rt.abortController = null;
     rt.child = null;
@@ -261,7 +271,13 @@ async function start(id, actor = SYSTEM_ACTOR) {
     return;
   }
 
-  runPromise.then((usage) => finish(null, usage)).catch((err) => finish(err));
+  // Two-argument .then(onSuccess, onFailure) — NOT .then(onSuccess).catch(onFailure).
+  // The chained-.catch() form would also catch an exception thrown BY
+  // finish() itself during the success path and call finish() a second
+  // time with a different (and wrong) status; this form only ever invokes
+  // one of the two callbacks, so finish() runs from exactly one path. The
+  // `finished` guard inside finish() is a second, independent backstop.
+  runPromise.then((usage) => finish(null, usage), (err) => finish(err));
 }
 
 async function stop(id, actor = SYSTEM_ACTOR) {
