@@ -125,6 +125,16 @@
     ));
   }
 
+  function escapeAttr(s) {
+    return escapeHtml(s);
+  }
+
+  function escapeSelectorValue(s) {
+    const value = String(s ?? '');
+    if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
+    return value.replace(/["\\]/g, '\\$&');
+  }
+
   function greetingWord() {
     const h = new Date().getHours();
     if (h < 12) return 'Good morning';
@@ -136,10 +146,15 @@
     return { idle: 'Idle', running: 'Running', completed: 'Completed', error: 'Failed', cancelled: 'Stopped' }[status] || status;
   }
 
+  function agentStatusClass(status) {
+    return ['idle', 'running', 'completed', 'error', 'cancelled'].includes(status) ? status : 'idle';
+  }
+
   // Workstream statuses are already human-readable (Planning/Active/Blocked/
   // Review/Completed/Archived) — this just maps to the lowercase CSS class.
   function workstreamStatusClass(status) {
-    return String(status || 'planning').toLowerCase();
+    const normalized = String(status || 'Planning').toLowerCase();
+    return ['planning', 'active', 'blocked', 'review', 'completed', 'archived'].includes(normalized) ? normalized : 'planning';
   }
 
   function WorkstreamStatusIndicator(status) {
@@ -243,7 +258,7 @@
   // ---------------- Primitives (render helpers) ----------------
 
   function StatusIndicator(status) {
-    return `<span class="status status-${status}">${statusLabel(status)}</span>`;
+    return `<span class="status status-${agentStatusClass(status)}">${escapeHtml(statusLabel(status))}</span>`;
   }
 
   function Metric(value, label, opts = {}) {
@@ -375,7 +390,7 @@
         <p class="section-title" style="margin-top:32px;">Workstreams</p>
         <ul class="attention-list">
           ${state.workstreams.filter((w) => !w.archived).map((ws) => `
-            <li class="attention-item" data-workstream-id="${ws.id}" style="cursor:pointer;">
+            <li class="attention-item" data-workstream-id="${escapeAttr(ws.id)}" style="cursor:pointer;">
               ${WorkstreamStatusIndicator(ws.status)}
               <div class="body">
                 <div class="title">${escapeHtml(ws.name)} — ${escapeHtml(synthesizeWorkstreamLine(ws))}</div>
@@ -469,7 +484,7 @@
     }
 
     const workstreamOptions = state.workstreams
-      .map((w) => `<option value="${w.id}" ${state.agentsWorkstreamFilter === w.id ? 'selected' : ''}>${escapeHtml(w.name)}</option>`)
+      .map((w) => `<option value="${escapeAttr(w.id)}" ${state.agentsWorkstreamFilter === w.id ? 'selected' : ''}>${escapeHtml(w.name)}</option>`)
       .join('');
 
     el.viewAgents.innerHTML = `
@@ -520,7 +535,7 @@
       : visible.map((agent) => {
         const status = statusOf(agent.id);
         return `
-          <div class="agent-row ${agent.id === state.selectedAgentId ? 'active' : ''}" data-id="${agent.id}">
+          <div class="agent-row ${agent.id === state.selectedAgentId ? 'active' : ''}" data-id="${escapeAttr(agent.id)}">
             ${StatusIndicator(status)}
             <div class="info">
               <div class="name">${escapeHtml(agent.name)}</div>
@@ -726,7 +741,7 @@
     const indexEl = document.getElementById('workstream-index');
     if (!indexEl) return;
     indexEl.innerHTML = state.workstreams.map((ws) => `
-      <div class="workstream-row ${ws.id === state.selectedWorkstreamId ? 'active' : ''}" data-id="${ws.id}">
+      <div class="workstream-row ${ws.id === state.selectedWorkstreamId ? 'active' : ''}" data-id="${escapeAttr(ws.id)}">
         ${WorkstreamStatusIndicator(ws.status)}
         <div class="info">
           <div class="name">${escapeHtml(ws.name)}</div>
@@ -791,7 +806,7 @@
             <p class="section-title">Participating agents</p>
             ${memberAgents.length === 0 ? EmptyState('No agents assigned yet.') : `
               <ul class="attention-list" id="ws-agent-list">${memberAgents.map((a) => `
-                <li class="attention-item" data-agent-id="${a.id}" style="cursor:pointer;">
+                <li class="attention-item" data-agent-id="${escapeAttr(a.id)}" style="cursor:pointer;">
                   ${StatusIndicator(statusOf(a.id))}
                   <div class="body"><div class="title">${escapeHtml(a.name)}</div><div class="meta">${escapeHtml(a.role || a.provider)}</div></div>
                 </li>`).join('')}</ul>`}
@@ -995,7 +1010,7 @@
     const expanded = state.expandedActivity.has(e.id);
     const d = e.details || {};
     return `
-      <div class="activity-row${e.flagged ? ' flagged' : ''}${expanded ? ' expanded' : ''}" data-id="${e.id}">
+      <div class="activity-row${e.flagged ? ' flagged' : ''}${expanded ? ' expanded' : ''}" data-id="${escapeAttr(e.id)}">
         <div class="activity-row-summary">
           <span class="time">${fmtDateTime(e.ts)}</span>
           <span class="flag-marker"></span>
@@ -1186,7 +1201,7 @@
     if (!el.workstreamSelect) return;
     const current = el.workstreamSelect.value;
     el.workstreamSelect.innerHTML = '<option value="">Unassigned</option>' +
-      state.workstreams.map((w) => `<option value="${w.id}">${escapeHtml(w.name)}</option>`).join('');
+      state.workstreams.map((w) => `<option value="${escapeAttr(w.id)}">${escapeHtml(w.name)}</option>`).join('');
     if (state.workstreams.some((w) => w.id === current)) el.workstreamSelect.value = current;
   }
 
@@ -1317,7 +1332,7 @@
         if (state.view === 'command') renderCommand();
         else if (state.view === 'activity') {
           renderActivityRows();
-          const row = document.querySelector(`.activity-row[data-id="${msg.event.id}"]`);
+          const row = document.querySelector(`.activity-row[data-id="${escapeSelectorValue(msg.event.id)}"]`);
           if (row && !prefersReducedMotion) row.classList.add('new-event');
         } else if (state.view === 'workstreams' && state.workstreamsShowingDetail) {
           renderWorkstreamDetailPanel();
