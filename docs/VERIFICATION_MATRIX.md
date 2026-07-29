@@ -84,6 +84,15 @@ was actually checked:
 | Security view: health banner, findings list, filters | Live runtime verified | Playwright, screenshots reviewed |
 | Full containment workflow through the actual browser UI | Live runtime verified | Playwright: click Acknowledge/Contain/Resolve, confirm server-side status after each click |
 | Degraded-store recovery buttons through the actual browser UI | Live runtime verified | Playwright: tamper, view degraded banner, click recovery, confirm healthy afterward |
+| **Effective-model accounting** | | |
+| A blank-model paid agent records the model it actually executes against | Automated-test verified + Live runtime verified | `test/integration.test.js` (run record + `run.started` audit event both assert `claude-sonnet-5`); reproduced live before the fix against a real server, where the same run recorded `model: null` |
+| The executed model is the one passed to `estimateCostUsd` | Automated-test verified | `test/effectiveModel.test.js` — resolved default prices to a non-null cost, while the previously-passed unresolved value prices to `null` |
+| Default-model spend is visible to `knownCost` (and so to the budget caps) | Automated-test verified | `test/effectiveModel.test.js` — aggregate over two default-model runs is `complete` with `knownCost > 0`; the pre-fix shape is asserted alongside it as `unavailable` / `0` |
+| An explicitly configured model is never replaced by a default | Automated-test verified | `test/effectiveModel.test.js`, `test/integration.test.js` (`gpt-4o` preserved) |
+| A genuinely unpriced model still reports `costUsd: null` | Automated-test verified | `test/effectiveModel.test.js` — resolution preserves the unknown model rather than substituting a priced one |
+| An unknown provider is never given another provider's default | Automated-test verified | `test/effectiveModel.test.js` |
+| Every provider default has a pricing-table entry | Automated-test verified | `test/effectiveModel.test.js` — guards against a future default change silently re-hiding spend |
+| Real paid-provider usage priced end-to-end through a live API call | Not verified | Same boundary as the `budget_pressure` row: would require real spend or SDK mocking. The integration tests exercise the provenance path without contacting a provider (the run record and audit event are written before the worker fails on the absent key) |
 | Mobile/responsive behavior of the new Security view | Not verified | The Phase 2 baseline's mobile patterns were reused (list/detail conventions, `activity-row` classes), but the Security view specifically was not tested at narrow viewport widths in this pass |
 
 ## Test suite summary
@@ -91,12 +100,13 @@ was actually checked:
 `npm test` = `test/runsStore.pricing.test.js` (6 cases) +
 `test/runsStore.executionSuccess.test.js` (5 cases) +
 `test/workstreamsStore.test.js` (15 cases, includes 3 Option B cases) +
-`test/integration.test.js` (22 cases, spawning real server processes
+`test/effectiveModel.test.js` (11 cases) +
+`test/integration.test.js` (24 cases, spawning real server processes
 against throwaway data directories: 16 from the original safety-foundation
-work plus 6 from the post-merge stabilization pass — the four PR #3 review
+work, 6 from the post-merge stabilization pass — the four PR #3 review
 findings, `maxTokens` validation, and idempotency payload-conflict
-detection). **26 unit + 22 integration = 48 tests, all passing** as of the
-final commit on this branch. (Corrected during a review-reconciliation
+detection — plus 2 for effective-model accounting). **37 unit + 24
+integration = 61 tests, all passing** as of the final commit on this branch. (Corrected during a review-reconciliation
 pass: the per-file case counts above — 6 + 5 + 15 = 26 — were always
 right; only the final summed total had carried a stale "27" since the
 original safety-foundation session, propagated forward through several

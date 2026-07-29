@@ -7,7 +7,15 @@
 // runs this system could actually price (see runsStore.aggregateCost's
 // pricingStatus). If some of today's runs used a model this system has no
 // documented price for, the real spend could be higher than what's checked
-// here. This is the same truthful-partial-total philosophy already used for
+// here. The largest source of that gap is now closed: an agent with no
+// explicit model used to run against the worker's default while being priced
+// against its unresolved (null) model, so ordinary default-model spend landed
+// in the unpriced bucket and counted as nothing here. Model resolution now
+// happens once, before the run, and the executed model is the one priced
+// (see models.js). What remains is the genuine case only: a model that is
+// really absent from the pricing table.
+//
+// This is the same truthful-partial-total philosophy already used for
 // cost reporting elsewhere — a control built on a silently-optimistic number
 // would be worse than no control at all, but blocking on totals this system
 // cannot vouch for as complete is also documented, not hidden.
