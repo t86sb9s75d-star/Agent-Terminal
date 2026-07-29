@@ -5,12 +5,14 @@ const OpenAI = require('openai');
 // operator-facing runtime ceiling enforced in agentManager.js.
 const PROVIDER_TIMEOUT_MS = Number(process.env.RUCKER_PROVIDER_TIMEOUT_MS) || 5 * 60 * 1000; // 5 min
 
-async function runOpenAI({ agent, onLog, signal }) {
+// `model` is the already-resolved effective model supplied by agentManager —
+// see the matching comment in workers/anthropic.js and the rationale in
+// models.js. This worker deliberately applies no default of its own.
+async function runOpenAI({ agent, model, onLog, signal }) {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error('OPENAI_API_KEY is not set on the server');
   }
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: PROVIDER_TIMEOUT_MS });
-  const model = agent.model || 'gpt-4o-mini';
 
   const messages = [];
   if (agent.systemPrompt) messages.push({ role: 'system', content: agent.systemPrompt });

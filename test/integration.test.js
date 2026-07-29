@@ -756,6 +756,99 @@ async function run() {
     }
   });
 
+  // ---------------- Effective-model accounting regression tests ----------------
+  // The defect: workers resolved their own default model at execution time
+  // while agentManager recorded and priced the unresolved `agent.model`, so a
+  // blank-model agent spent real money against a real default but was recorded
+  // as model: null / costUsd: null — invisible to run history and to the
+  // knownCost totals the daily budget caps compare against. See src/models.js.
+  //
+  // These cases need no API key and make no paid call: the run record and its
+  // audit event are written BEFORE the provider is contacted, and the worker
+  // then fails fast on the missing key.
+
+  await check('a blank-model paid agent records the resolved default model, not null', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const agent = await (await fetch(`${server.baseUrl}/api/agents`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Blank Model', provider: 'anthropic', task: 'noop' }),
+      })).json();
+      assert.strictEqual(agent.model, null, 'precondition: no model configured');
+
+      await fetch(`${server.baseUrl}/api/agents/${agent.id}/start`, { method: 'POST' });
+
+      // The run fails (no ANTHROPIC_API_KEY) but provenance is already written.
+      let runs = [];
+      for (let i = 0; i < 40; i += 1) {
+        ({ runs } = await (await fetch(`${server.baseUrl}/api/agents/${agent.id}/runs`)).json());
+        if (runs.length > 0 && runs[0].status !== 'running') break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      assert.strictEqual(runs.length, 1);
+      assert.strictEqual(
+        runs[0].model,
+        'claude-sonnet-5',
+        'run record must name the model that would actually have been invoked'
+      );
+      assert.strictEqual(runs[0].provider, 'anthropic');
+
+      // The audit event must carry the same resolved value, not null.
+      const events = await (await fetch(`${server.baseUrl}/api/activity?limit=200`)).json();
+      const started = events.find((e) => e.action === 'run.started');
+      assert.ok(started, 'run.started event must exist');
+      assert.strictEqual(started.details.model, 'claude-sonnet-5');
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('an explicitly configured model is recorded unchanged, and custom agents stay model-free', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+
+      // Explicit model on a paid provider — must be preserved verbatim.
+      const explicit = await (await fetch(`${server.baseUrl}/api/agents`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Explicit', provider: 'openai', task: 'noop', model: 'gpt-4o' }),
+      })).json();
+      await fetch(`${server.baseUrl}/api/agents/${explicit.id}/start`, { method: 'POST' });
+
+      // Custom provider — no model concept, and unaffected by this change.
+      const custom = await (await fetch(`${server.baseUrl}/api/agents`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Custom', provider: 'custom', command: 'echo done' }),
+      })).json();
+      await fetch(`${server.baseUrl}/api/agents/${custom.id}/start`, { method: 'POST' });
+
+      const settled = async (id) => {
+        let runs = [];
+        for (let i = 0; i < 40; i += 1) {
+          ({ runs } = await (await fetch(`${server.baseUrl}/api/agents/${id}/runs`)).json());
+          if (runs.length > 0 && runs[0].status !== 'running') break;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        return runs[0];
+      };
+
+      const explicitRun = await settled(explicit.id);
+      assert.strictEqual(explicitRun.model, 'gpt-4o', 'explicit model must not be replaced by the default');
+
+      const customRun = await settled(custom.id);
+      assert.strictEqual(customRun.status, 'completed');
+      assert.strictEqual(customRun.model, null, 'custom agents have no model');
+      assert.strictEqual(customRun.costUsd, null, 'custom agents are never assigned a cost');
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   console.log(`\n${passed} passed, ${failures.length} failed`);
   if (failures.length > 0) {
     for (const f of failures) console.error(`FAILED: ${f.name}\n${f.err.stack}`);

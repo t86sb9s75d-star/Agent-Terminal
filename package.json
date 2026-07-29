@@ -7,7 +7,7 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "test:unit": "node test/runsStore.pricing.test.js && node test/runsStore.executionSuccess.test.js && node test/workstreamsStore.test.js",
+    "test:unit": "node test/runsStore.pricing.test.js && node test/runsStore.executionSuccess.test.js && node test/workstreamsStore.test.js && node test/effectiveModel.test.js",
     "test:integration": "node test/integration.test.js",
     "test": "npm run test:unit && npm run test:integration"
   },

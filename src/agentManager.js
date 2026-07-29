@@ -6,6 +6,7 @@ const runsStore = require('./runsStore');
 const eventLog = require('./eventLog');
 const workstreamsStore = require('./workstreamsStore');
 const { estimateCostUsd } = require('./pricing');
+const { resolveEffectiveModel } = require('./models');
 const runAnthropic = require('./workers/anthropic');
 const runOpenAI = require('./workers/openai');
 const runCustom = require('./workers/custom');
@@ -120,10 +121,16 @@ async function start(id, actor = SYSTEM_ACTOR) {
   rt.abortController = new AbortController();
   rt.timedOut = false;
   rt.outputTruncated = false;
+
+  // Resolve the model ONCE, here, before anything is recorded or executed.
+  // This single value is what gets invoked, recorded, audited, and priced —
+  // see models.js for why letting those diverge silently hid real spend.
+  const effectiveModel = resolveEffectiveModel(agent.provider, agent.model);
+
   const run = runsStore.startRun({
     agentId: id,
     provider: agent.provider,
-    model: agent.model,
+    model: effectiveModel,
     workstreamId: agent.workstreamId,
     requestId: actor.requestId || null,
   });
@@ -139,7 +146,7 @@ async function start(id, actor = SYSTEM_ACTOR) {
     details: {
       agentName: agent.name,
       provider: agent.provider,
-      model: agent.model,
+      model: effectiveModel,
       runId: run.id,
       workstreamId: agent.workstreamId,
     },
@@ -193,7 +200,7 @@ async function start(id, actor = SYSTEM_ACTOR) {
     const inputTokens = usage?.inputTokens ?? null;
     const outputTokens = usage?.outputTokens ?? null;
     const cachedTokens = usage?.cachedTokens ?? null;
-    const costUsd = estimateCostUsd(agent.provider, agent.model, inputTokens, outputTokens);
+    const costUsd = estimateCostUsd(agent.provider, effectiveModel, inputTokens, outputTokens);
     const runError = status === 'error' ? err.message : status === 'timed_out' ? `runtime limit exceeded (${maxRuntimeMs}ms)` : null;
 
     // Phase 4.6 — the per-run cap can't be checked before the call (cost is
@@ -260,9 +267,9 @@ async function start(id, actor = SYSTEM_ACTOR) {
     if (agent.provider === 'custom') {
       runPromise = runCustom({ agent, onLog, runtime: rt });
     } else if (agent.provider === 'anthropic') {
-      runPromise = runAnthropic({ agent, onLog, signal: rt.abortController.signal });
+      runPromise = runAnthropic({ agent, model: effectiveModel, onLog, signal: rt.abortController.signal });
     } else if (agent.provider === 'openai') {
-      runPromise = runOpenAI({ agent, onLog, signal: rt.abortController.signal });
+      runPromise = runOpenAI({ agent, model: effectiveModel, onLog, signal: rt.abortController.signal });
     } else {
       throw new Error(`unknown provider "${agent.provider}"`);
     }

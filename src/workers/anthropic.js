@@ -8,12 +8,16 @@ const Anthropic = require('@anthropic-ai/sdk');
 // long regardless of what the agent's task is.
 const PROVIDER_TIMEOUT_MS = Number(process.env.RUCKER_PROVIDER_TIMEOUT_MS) || 5 * 60 * 1000; // 5 min
 
-async function runAnthropic({ agent, onLog, signal }) {
+// `model` is the already-resolved effective model supplied by agentManager,
+// which is the single place a provider default is applied (see models.js).
+// This worker deliberately does not fall back to its own default: doing so is
+// exactly what let the executed model drift away from the recorded and priced
+// one, hiding real spend from run history and the budget caps.
+async function runAnthropic({ agent, model, onLog, signal }) {
   if (!process.env.ANTHROPIC_API_KEY) {
     throw new Error('ANTHROPIC_API_KEY is not set on the server');
   }
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, timeout: PROVIDER_TIMEOUT_MS });
-  const model = agent.model || 'claude-sonnet-5';
 
   const stream = client.messages.stream(
     {
