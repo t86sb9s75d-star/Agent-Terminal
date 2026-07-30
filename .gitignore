@@ -12,3 +12,4 @@ data/*.corrupt-*
 data/logs/
 .env
 *.log
+test-artifacts/

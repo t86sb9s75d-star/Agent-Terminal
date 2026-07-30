@@ -18,6 +18,15 @@ const onboarding = require('../src/onboardingStore');
 const yc = require('../src/ycStore');
 const agentSettings = require('../src/workspaceAgentSettingsStore');
 
+// Clean up the scratch directory however this process exits — including when
+// an assertion throws. Cleaning up only at the end of the file leaked a temp
+// directory on every failing run (found during the Phase 6 baseline sweep).
+function cleanupScratch() {
+  try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch { /* ignore */ }
+}
+process.on('exit', cleanupScratch);
+process.on('uncaughtException', (err) => { cleanupScratch(); console.error(err); process.exit(1); });
+
 let passed = 0;
 function check(name, fn) { fn(); passed += 1; console.log(`ok - ${name}`); }
 
