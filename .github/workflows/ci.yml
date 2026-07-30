@@ -1,0 +1,95 @@
+name: CI
+
+# Rucker Park has no CI before this workflow. It exists so the test suite is
+# actually run on every change rather than depending on someone remembering to
+# run it locally.
+#
+# Deliberate properties:
+#   - No secrets are referenced anywhere. Provider API keys are never provided,
+#     so no paid model call can occur in CI (the frontend/integration harnesses
+#     additionally strip ANTHROPIC_API_KEY / OPENAI_API_KEY from the server env).
+#   - A single Node version. The project targets one runtime; a version matrix
+#     would add CI time without testing anything the project claims to support.
+#   - Tests write only to throwaway temp directories, never to the checkout.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'claude/**'
+
+# Cancel superseded runs on the same ref — this suite spawns real servers and a
+# browser, so overlapping runs waste a meaningful amount of CI time.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax check every tracked JS file
+        run: |
+          fail=0
+          for f in $(git ls-files '*.js'); do
+            node --check "$f" || { echo "SYNTAX FAIL: $f"; fail=1; }
+          done
+          exit $fail
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Integration tests
+        run: npm run test:integration
+
+      # playwright-managed Chromium. --with-deps installs the system libraries
+      # the browser needs on a clean runner.
+      - name: Install Chromium for browser tests
+        run: npx playwright install --with-deps chromium
+
+      - name: Frontend tests
+        run: npm run test:frontend
+
+      - name: Security audit
+        run: npm audit --audit-level=moderate
+
+      # A test that writes into the checkout (stray data/, logs, artifacts that
+      # escaped .gitignore) is a defect — catch it here rather than in review.
+      - name: Working tree must be clean after tests
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::tests modified the working tree:"
+            git status --porcelain
+            exit 1
+          fi
+          echo "working tree clean"
+
+      # Only on failure, and only the debugging bundle the harness writes —
+      # screenshots, page HTML, console/page errors, failed requests, and server
+      # output. No environment variables or request headers are captured.
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-artifacts-${{ github.run_id }}
+          path: test-artifacts/
+          retention-days: 7
+          if-no-files-found: ignore
