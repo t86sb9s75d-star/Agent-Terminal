@@ -173,6 +173,12 @@ check('YC starts at 0 with all four sections and computes as items are checked',
   for (const req of ['YC Startup School Progress', 'YC Business Process', 'YC Partner Search', 'YC Application Process']) {
     assert.ok(labels.includes(req), `missing YC section: ${req}`);
   }
+  // Every section must expose its items with done state — the UI renders the
+  // checklist from these, and computeForWorkspace must not drop them.
+  for (const s of before.sections) {
+    assert.ok(Array.isArray(s.items) && s.items.length > 0, `section ${s.id} must include its items`);
+    assert.ok(s.items.every((it) => typeof it.done === 'boolean'), 'each item carries a done flag');
+  }
   yc.setItem(wsA.id, 'ss_enrolled', true);
   const after = yc.computeForWorkspace(wsA.id);
   assert.ok(after.overall > 0, 'checking an item should raise overall');
@@ -180,6 +186,7 @@ check('YC starts at 0 with all four sections and computes as items are checked',
   const ss = after.sections.find((s) => s.id === 'startup_school');
   assert.strictEqual(ss.completedItems, 1);
   assert.strictEqual(ss.totalItems, 3);
+  assert.strictEqual(ss.items.find((i) => i.id === 'ss_enrolled').done, true);
 });
 
 check('YC rejects unknown checklist items and is workspace-scoped', () => {

@@ -99,10 +99,15 @@ function computeForWorkspace(workspaceId) {
     items: s.items.map((i) => ({ id: i.id, label: i.label, done: done.has(i.id) })),
   }));
   const scored = ycOverall(sections);
+  // scoreSection returns the score breakdown (score/weight/completed/total/
+  // missing) but not the item list; the UI needs each item's done state to
+  // render the checklist, so merge the original items back in by position
+  // (scored.sections preserves input order).
+  const sectionsWithItems = scored.sections.map((s, i) => ({ ...s, items: sections[i].items }));
   return {
     workspaceId: wsId,
     overall: scored.overall, // 0..100; a preparation-completeness measure, not an acceptance probability
-    sections: scored.sections,
+    sections: sectionsWithItems,
     updatedAt: record ? record.updatedAt : null,
   };
 }
