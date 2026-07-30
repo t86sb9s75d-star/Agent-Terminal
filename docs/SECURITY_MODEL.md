@@ -162,6 +162,44 @@ now also stores a hash of the request body, checked on reuse; reusing a
 key with a different payload returns a clean `409 IDEMPOTENCY_CONFLICT`
 instead. Verified live and via `test/integration.test.js`.
 
+### Workspace separation is NOT a security boundary
+
+Feature Onboard adds business workspaces. Every workspace-owned record carries
+a `workspaceId`, and every store operation is keyed on `(workspaceId, id)`
+together, so a record filed under one workspace is not reachable through
+another — verified at the store level, over HTTP, and in the rendered UI, each
+with a test proven to fail when the scoping is removed.
+
+That property is **organizational separation, not tenant isolation**, and the
+distinction matters:
+
+- There is still **no authentication**. Anyone who can reach the API can reach
+  every workspace. Scoping prevents accidental cross-contamination of one
+  business's records into another's views; it stops nothing an attacker does.
+- It is enforced in application code only. Anyone with filesystem access reads
+  every workspace's JSON directly, exactly as before.
+- It must never be cited as a reason this system could host more than one
+  person's data. Multi-user use would require authentication, authorization,
+  and a re-examination of the `custom` provider (below) — none of which exist.
+
+### Feature Onboard permissions are mostly recorded preferences
+
+The workspace agent-settings UI presents a permission list (spend money, run
+commands, contact people, act without approval, and so on) with least-authority
+defaults — every consequential capability is off unless explicitly granted.
+
+**Only three of those have an enforcement point today**: `spend_money` and
+`paid_model_calls` (enforced by the daily caps in `src/budget.js`, checked
+before a paid run starts) and `use_custom_provider` (the documented
+custom-provider trust boundary plus `minimalEnv()`). The remainder are stored
+and displayed, and are available to a future enforcement layer, but **nothing
+consults them yet**.
+
+This is why neither the interface nor `docs/FEATURE_ONBOARD.md` describes those
+permissions as "blocked" or "protected". Granting or denying them changes what
+is recorded, not what an agent can do. The full per-capability table lives in
+`docs/FEATURE_ONBOARD.md`.
+
 ## Explicitly accepted, not fixed: shell injection via `custom` agents
 
 `workers/custom.js` runs `spawn(agent.command, { shell: true, ... })`.

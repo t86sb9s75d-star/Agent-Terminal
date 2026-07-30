@@ -993,6 +993,47 @@ async function run() {
     }
   });
 
+  await check('every Feature Onboard store is registered for operator recovery', async () => {
+    // A newly added store that the recovery endpoint does not know about is a
+    // real gap: it would be the one store an operator could not repair after
+    // corruption or tampering. This asserts the wiring rather than trusting it,
+    // and is why docs/FEATURE_ONBOARD.md can state it as fact.
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      // Create data in every store so each has a file and a backup to restore.
+      const ws = (await json(await post(server.baseUrl, '/api/workspaces', { name: 'Recover' }))).body;
+      await put(server.baseUrl, '/api/profile', { skills: ['x'] });
+      await post(server.baseUrl, '/api/onboarding/start');
+      await put(server.baseUrl, `/api/workspaces/${ws.id}/yc`, { itemId: 'ss_enrolled', done: true });
+      await put(server.baseUrl, `/api/workspaces/${ws.id}/agents/interview_agent`, { enabled: true });
+      await post(server.baseUrl, `/api/workspaces/${ws.id}/goals`, { title: 'g' });
+      await post(server.baseUrl, `/api/workspaces/${ws.id}/tasks`, { title: 't' });
+      await post(server.baseUrl, `/api/workspaces/${ws.id}/decisions`, { decision: 'd' });
+      await post(server.baseUrl, `/api/workspaces/${ws.id}/assumptions`, { statement: 'a' });
+      await post(server.baseUrl, `/api/workspaces/${ws.id}/experiments`, { title: 'e' });
+      await post(server.baseUrl, `/api/workspaces/${ws.id}/evidence`, { summary: 's', evidenceKind: 'customer_statement' });
+
+      const storeNames = [
+        'workspaces', 'founder_profile', 'onboarding_state', 'yc_progress', 'workspace_agent_settings',
+        'workspace_goals', 'workspace_tasks', 'workspace_decisions',
+        'workspace_assumptions', 'workspace_experiments', 'workspace_evidence',
+      ];
+      for (const name of storeNames) {
+        const res = await post(server.baseUrl, `/api/security/stores/${name}/recover`, { resolution: 'restore_backup' });
+        assert.notStrictEqual(res.status, 404, `store "${name}" is not registered for recovery`);
+        assert.strictEqual(res.status, 200, `recovery of "${name}" should succeed (got ${res.status})`);
+      }
+      // and an unknown store is still rejected
+      const unknown = await post(server.baseUrl, '/api/security/stores/not_a_store/recover', { resolution: 'restore_backup' });
+      assert.strictEqual(unknown.status, 404);
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   await check('existing agent and workstream APIs still work alongside Feature Onboard', async () => {
     const dataDir = freshDataDir();
     const server = startServer(dataDir);

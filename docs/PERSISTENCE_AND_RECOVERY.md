@@ -145,9 +145,27 @@ usably, via the Security view's degraded-store banner, which shows the
 store, the reason, and both actions as separately confirmed buttons.
 Both paths record a flagged `store.recovery_performed` audit event.
 Recoverable store names: `agents`, `runs`, `workstreams`,
-`security_events`, `config_history`. The append-only audit log
-(`events`) is not in this list — see "A note on recovering the audit
-log itself," below.
+`security_events`, `config_history`, plus every Feature Onboard store —
+`workspaces`, `founder_profile`, `onboarding_state`, `yc_progress`,
+`workspace_agent_settings`, and the six workspace record stores
+(`workspace_goals`, `workspace_tasks`, `workspace_decisions`,
+`workspace_assumptions`, `workspace_experiments`, `workspace_evidence`).
+The append-only audit log (`events`) is not in this list — see "A note on
+recovering the audit log itself," below.
+
+A store that exists but was never registered here would be the one store an
+operator could not repair after corruption or tampering, so this is asserted by
+a test (`test/integration.test.js`, "every Feature Onboard store is registered
+for operator recovery") rather than left to reviewer diligence — verified to
+fail when a single store is removed from the map.
+
+Feature Onboard added no new persistence mechanics. Each of its stores is built
+on the same `createVersionedStore` seam and therefore inherits atomic writes,
+the missing/empty/populated/recovered/corrupt distinction, rotating backups,
+hash-sidecar tamper detection that never auto-rebaselines, and schema
+versioning (all currently at version 1, no migration defined). Their
+corruption/tamper events reach the audit log and Sentinel through the same
+`onStoreEvent` emitter as every other store.
 
 Verified live: tampering with `agents.json` directly on disk, confirming
 `/api/security/status` reports degraded, calling the recovery endpoint

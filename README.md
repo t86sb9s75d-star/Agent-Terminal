@@ -7,6 +7,7 @@ Naismith is the intelligence system; Rucker Park is where it's operated. This fi
 ## Features
 
 - **Command view** — a real-time summary of the whole system: active agents, what completed today, what needs attention, cost today, and execution success — no invented metrics.
+- **Business workspaces (Feature Onboard)** — separate operating spaces for different businesses or projects, each with a founder command center, goals, a decision log (immutable except status), an assumption/risk register (confidence tracked separately from status), a customer-evidence vault that preserves what people *said* versus what they *did*, an agent catalog with stage-based recommendations, and a YC preparation checklist scored out of 100 from transparent, inspectable components — never presented as a probability of acceptance. Workspace separation is **organizational, not a security boundary**: it keeps one business's records out of another's views inside a single operator's installation, and the system still has no authentication. Most agent permissions are **recorded preferences rather than enforced gates** — `docs/FEATURE_ONBOARD.md` states exactly which three are actually enforced and where.
 - **Workstreams** — group agents around an objective (`Workspace → Workstream → Agents → Runs → Events`). Status (Planning/Active/Blocked/Review/Completed/Archived) is computed from real run outcomes or manually overridden — never auto-promoted to "Review"/"Completed", since the system can't honestly judge that. A run's workstream attribution is a permanent snapshot taken when it started: reassigning an agent later never rewrites history. "Progress" is deliberately always "unavailable" — there's no planned-work baseline to measure it against, and the alternative (faking it from a success ratio) was rejected as misleading.
 - **Agent registry** — define agents (name, role, provider, model, prompt/task or shell command) and persist them to disk.
 - **Start / stop / status** — run agents on demand and track their lifecycle (idle, running, completed, failed, cancelled).
@@ -33,6 +34,7 @@ What's deliberately **not** measured yet: task/answer quality, decision quality,
 - `docs/OPERATIONS.md` — environment variables, backups, day-to-day operation
 - `docs/INCIDENT_RESPONSE.md` — what to actually do for each kind of signal
 - `docs/VERIFICATION_MATRIX.md` — every safety claim above, labeled by how it was actually verified
+- `docs/FEATURE_ONBOARD.md` — the workspace operating layer: architecture, progress formulas, and an explicit stored-vs-enforced permission table
 
 ## Design system
 
@@ -41,12 +43,20 @@ The UI follows `docs/VISUAL_REFERENCE_AUDIT.md` — a short, practical record of
 ## Tests
 
 ```bash
-npm test              # unit tests, then integration tests
+npm run test:all      # unit, then integration, then browser tests
+npm test              # unit tests, then integration tests (no browser)
 npm run test:unit      # fast unit tests only
 npm run test:integration  # spawns real server instances against throwaway data directories
+npm run test:frontend  # real Chromium against a real server (Playwright)
 ```
 
-Unit tests cover the cost-aggregation, execution-success, and workstream-status/history semantics described above — the places a well-intentioned refactor could quietly reintroduce a misleading number or silently rewrite history. Integration tests spawn a real `node src/server.js` process per case and talk to it over real HTTP, covering the safety-foundation behaviors (crash recovery, tamper detection, archived-workstream enforcement, the path-traversal fix, CSRF rejection, single-instance locking, idempotency-key replay and payload-conflict detection, runtime timeouts, output truncation, budget enforcement, Sentinel findings/containment) plus the post-merge stabilization fixes (workstream incident resolution actually clearing via the API, whitespace-only field rejection, provider-switch validation, backup-timing behavior, numeric field validation) and effective-model accounting (the model a run executes against is the model recorded, audited, and priced). 37 unit + 24 integration = 61 tests, all passing. See `docs/VERIFICATION_MATRIX.md` for exactly what each safety claim is (and isn't) covered by.
+CI (`.github/workflows/ci.yml`) runs all three layers plus a syntax check,
+`npm audit`, and a working-tree-clean gate on pull requests and on pushes to
+`main` and `claude/**`. No secrets are referenced in CI, and the test harnesses
+strip provider API keys from the server environment, so **no paid model call
+can occur in any test run**.
+
+Unit tests cover the cost-aggregation, execution-success, and workstream-status/history semantics described above — the places a well-intentioned refactor could quietly reintroduce a misleading number or silently rewrite history. Integration tests spawn a real `node src/server.js` process per case and talk to it over real HTTP, covering the safety-foundation behaviors (crash recovery, tamper detection, archived-workstream enforcement, the path-traversal fix, CSRF rejection, single-instance locking, idempotency-key replay and payload-conflict detection, runtime timeouts, output truncation, budget enforcement, Sentinel findings/containment) plus the post-merge stabilization fixes (workstream incident resolution actually clearing via the API, whitespace-only field rejection, provider-switch validation, backup-timing behavior, numeric field validation) and effective-model accounting (the model a run executes against is the model recorded, audited, and priced). Browser tests drive real Chromium against a real server, covering the Feature Onboard onboarding/workspace/YC paths, adversarial rendering input, accessibility semantics, mobile widths, and regression of the pre-existing views. **86 unit + 32 integration + 29 browser = 147 tests, all passing.** See `docs/VERIFICATION_MATRIX.md` for exactly what each safety claim is (and isn't) covered by, and `docs/FEATURE_ONBOARD.md` for what Feature Onboard enforces versus merely stores.
 
 ## Getting started
 

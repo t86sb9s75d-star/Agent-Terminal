@@ -93,6 +93,23 @@ was actually checked:
 | An unknown provider is never given another provider's default | Automated-test verified | `test/effectiveModel.test.js` |
 | Every provider default has a pricing-table entry | Automated-test verified | `test/effectiveModel.test.js` — guards against a future default change silently re-hiding spend |
 | Real paid-provider usage priced end-to-end through a live API call | Not verified | Same boundary as the `budget_pressure` row: would require real spend or SDK mocking. The integration tests exercise the provenance path without contacting a provider (the run record and audit event are written before the worker fails on the absent key) |
+| **Feature Onboard — workspace operating layer** | | |
+| Workspace-owned records never leak across workspaces (store level) | Automated-test verified | `test/workspaceStores.test.js` — get/update/delete under the wrong workspace; proven to fail when scoping is reduced to id-only |
+| Workspace isolation holds over real HTTP | Automated-test verified | `test/integration.test.js` — cross-workspace GET/PUT/DELETE all 404 |
+| Workspace isolation holds in the rendered UI | Automated-test verified | `test/frontend/featureOnboard.test.js` — switching workspaces swaps records for every record type; proven to fail when server-side scoping is removed |
+| Workspace progress is computed server-side, never trusted from the client | Automated-test verified | `test/integration.test.js` — a client-supplied `progress: 99` is ignored; server returns the milestone-derived value |
+| No milestones yields `null` (not a fabricated 0) | Automated-test verified | `test/progress.test.js` — proven to fail when changed to return 0 |
+| YC sections carry their checklist items through the API | Automated-test verified | `test/workspaceStores.test.js` + `test/frontend/featureOnboard.test.js` — this exact contract broke once and the browser test is what caught it |
+| YC scores update deterministically and survive reload | Automated-test verified | `test/frontend/featureOnboard.test.js` |
+| YC score is never presented as an acceptance probability | Automated-test verified | `test/frontend/featureOnboard.test.js` asserts the rendered copy contains no probability language |
+| Onboarding first-run / skip / resume / complete / reopen | Automated-test verified | `test/frontend/featureOnboard.test.js` (5 cases) + `test/integration.test.js` |
+| Operator-controlled values render as text, not markup | Automated-test verified | `test/frontend/featureOnboard.test.js` — HTML, event-handler and quote-breaking payloads; proven to fail when `esc()` or `attr()` is broken |
+| Every Feature Onboard store is registered for operator recovery | Automated-test verified | `test/integration.test.js` — proven to fail when one store is unregistered |
+| Feature Onboard permission preferences are enforced | **Not verified — mostly not enforced by design** | Only `spend_money`, `paid_model_calls` and `use_custom_provider` have an enforcement point (budget caps / custom-provider boundary). The rest are stored preferences; see the table in `docs/FEATURE_ONBOARD.md`. The UI and docs must not call them blocked or protected. |
+| Accessibility semantics (dialog, tablist, progressbar, focus, Escape) | Automated-test verified (programmatic only) | `test/frontend/featureOnboard.test.js` — asserts roles/aria values/keyboard behavior. This is NOT the same as verification with a real screen reader, which was not done. |
+| Mobile layout at 390px and on a short (keyboard-open) viewport | Automated-test verified | `test/frontend/featureOnboard.test.js` — no horizontal overflow, wizard reachable |
+| Browser coverage beyond Chromium | Not verified | Firefox and WebKit are not exercised; the suite runs Chromium only |
+| Feature Onboard behavior under concurrent multi-process access | Not verified (and not claimed) | Single-process assumption inherited from `instanceLock.js` |
 | Mobile/responsive behavior of the new Security view | Not verified | The Phase 2 baseline's mobile patterns were reused (list/detail conventions, `activity-row` classes), but the Security view specifically was not tested at narrow viewport widths in this pass |
 
 ## Test suite summary
@@ -100,13 +117,17 @@ was actually checked:
 `npm test` = `test/runsStore.pricing.test.js` (6 cases) +
 `test/runsStore.executionSuccess.test.js` (5 cases) +
 `test/workstreamsStore.test.js` (15 cases, includes 3 Option B cases) +
-`test/effectiveModel.test.js` (11 cases) +
-`test/integration.test.js` (24 cases, spawning real server processes
+`test/effectiveModel.test.js` (11 cases) + `test/progress.test.js` (14 cases) +
+`test/domainModel.test.js` (15 cases) + `test/workspaceStores.test.js` (20 cases) +
+`test/integration.test.js` (32 cases, spawning real server processes
 against throwaway data directories: 16 from the original safety-foundation
 work, 6 from the post-merge stabilization pass — the four PR #3 review
 findings, `maxTokens` validation, and idempotency payload-conflict
-detection — plus 2 for effective-model accounting). **37 unit + 24
-integration = 61 tests, all passing** as of the final commit on this branch. (Corrected during a review-reconciliation
+detection — 2 for effective-model accounting, and 9 for Feature Onboard) +
+`test/frontend/featureOnboard.test.js` (29 cases, driving real Chromium
+against a real server). **86 unit + 32 integration + 29 browser = 147 tests,
+all passing** as of the final commit on this branch, and verified green in CI
+on the remote branch (`.github/workflows/ci.yml`, run #1, conclusion success). (Corrected during a review-reconciliation
 pass: the per-file case counts above — 6 + 5 + 15 = 26 — were always
 right; only the final summed total had carried a stale "27" since the
 original safety-foundation session, propagated forward through several
