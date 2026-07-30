@@ -49,6 +49,16 @@ function readAll() {
   }
   return records;
 }
+
+// config must be a plain object (a key/value bag), not an array or scalar —
+// arrays would otherwise be accepted by a bare typeof check and stored as a
+// config shape no caller expects.
+function normalizeConfig(config) {
+  if (config === null || typeof config !== 'object' || Array.isArray(config)) {
+    throw new AppError(Codes.VALIDATION_ERROR, 'config must be an object');
+  }
+  return config;
+}
 function writeAll(records) { getStore().write(records); }
 
 // All settings rows for a workspace (scoped read).
@@ -85,7 +95,7 @@ function upsert(workspaceId, agentId, { enabled, permissions, config, recommende
     permissions: permissions !== undefined
       ? normalizePermissions(permissions)
       : (existing ? existing.permissions : defaultPermissionsFor()),
-    config: config !== undefined ? (config && typeof config === 'object' ? config : {}) : (existing ? existing.config : {}),
+    config: config !== undefined ? normalizeConfig(config) : (existing ? existing.config : {}),
     recommendedStage: recommendedStage !== undefined ? recommendedStage : (existing ? existing.recommendedStage : null),
     createdAt: existing ? existing.createdAt : now,
     updatedAt: now,

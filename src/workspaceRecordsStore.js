@@ -40,6 +40,17 @@ function optionalString(value, field, fallback = '') {
   return value;
 }
 
+// Required non-empty string that behaves correctly for BOTH create and update:
+// on create (existing === null) an omitted value is rejected, not silently left
+// undefined; on update an omitted value keeps the existing one. Without this,
+// the `data.x !== undefined ? requireString(...) : existing?.x` idiom lets a
+// record be created with no title/statement/summary at all.
+function requiredField(data, existing, key, label) {
+  if (data[key] !== undefined) return requireString(data[key], label);
+  if (existing) return existing[key];
+  throw new AppError(Codes.VALIDATION_ERROR, `${label} is required`);
+}
+
 // Milestones drive deterministic workspace progress (see progress.js). Each is
 // { id, label, weight, done|fraction }. We validate shape but store as given;
 // progress is computed on read, never trusted from a client total.
@@ -67,20 +78,23 @@ function validateMilestones(value) {
 const GOAL_STATUSES = ['not_started', 'in_progress', 'blocked', 'done', 'abandoned'];
 function validateGoal(data, existing) {
   return {
-    title: data.title !== undefined ? requireString(data.title, 'title') : existing?.title,
+    title: requiredField(data, existing, 'title', 'title'),
     description: data.description !== undefined ? String(data.description) : (existing?.description ?? ''),
     targetDate: data.targetDate !== undefined ? (data.targetDate || null) : (existing?.targetDate ?? null),
     status: data.status !== undefined ? assertEnum(data.status, GOAL_STATUSES, 'status') : (existing?.status ?? 'not_started'),
     successCriteria: data.successCriteria !== undefined ? String(data.successCriteria) : (existing?.successCriteria ?? ''),
     milestones: data.milestones !== undefined ? validateMilestones(data.milestones) : (existing?.milestones ?? []),
     blockers: data.blockers !== undefined ? String(data.blockers) : (existing?.blockers ?? ''),
+    // Goal-to-goal dependencies (handoff §6.5). Stored as ids; not existence-
+    // checked, so removing a depended-on goal can't corrupt this record.
+    dependencies: data.dependencies !== undefined ? validateIdList(data.dependencies) : (existing?.dependencies ?? []),
   };
 }
 
 const TASK_STATUSES = ['todo', 'in_progress', 'done', 'cancelled'];
 function validateTask(data, existing) {
   return {
-    title: data.title !== undefined ? requireString(data.title, 'title') : existing?.title,
+    title: requiredField(data, existing, 'title', 'title'),
     status: data.status !== undefined ? assertEnum(data.status, TASK_STATUSES, 'status') : (existing?.status ?? 'todo'),
     goalId: data.goalId !== undefined ? (data.goalId || null) : (existing?.goalId ?? null),
     notes: data.notes !== undefined ? String(data.notes) : (existing?.notes ?? ''),
@@ -115,6 +129,8 @@ function validateDecision(data, existing) {
     alternatives: optionalString(data.alternatives, 'alternatives'),
     reconsiderWhen: optionalString(data.reconsiderWhen, 'reconsiderWhen'),
     supersedesId: data.supersedesId || null,
+    relatedGoalId: data.relatedGoalId || null,           // handoff §6.6: related goal
+    evidenceIds: validateIdList(data.evidenceIds ?? []), // handoff §6.6: supporting evidence
     status: data.status !== undefined ? assertEnum(data.status, DECISION_STATUSES, 'status') : 'proposed',
   };
 }
@@ -131,27 +147,34 @@ function validateAssumption(data, existing) {
   const defaultStatus = kind === 'risk' ? 'open' : 'untested';
   return {
     kind,
-    statement: data.statement !== undefined ? requireString(data.statement, 'statement') : existing?.statement,
+    statement: requiredField(data, existing, 'statement', 'statement'),
     category: data.category !== undefined ? String(data.category) : (existing?.category ?? ''),
     status: data.status !== undefined ? assertEnum(data.status, statuses, 'status') : (existing?.status ?? defaultStatus),
     confidence: data.confidence !== undefined ? assertEnum(data.confidence, CONFIDENCE_LEVELS, 'confidence') : (existing?.confidence ?? 'low'),
     plannedTest: data.plannedTest !== undefined ? String(data.plannedTest) : (existing?.plannedTest ?? ''),
     impact: data.impact !== undefined ? String(data.impact) : (existing?.impact ?? ''),
+    owner: data.owner !== undefined ? String(data.owner) : (existing?.owner ?? ''),                       // handoff §6.7
+    reviewDate: data.reviewDate !== undefined ? (data.reviewDate || null) : (existing?.reviewDate ?? null), // handoff §6.7
+    relatedGoalId: data.relatedGoalId !== undefined ? (data.relatedGoalId || null) : (existing?.relatedGoalId ?? null),
   };
 }
 
 const EXPERIMENT_STATUSES = ['planned', 'running', 'concluded', 'abandoned'];
 function validateExperiment(data, existing) {
   return {
-    title: data.title !== undefined ? requireString(data.title, 'title') : existing?.title,
+    title: requiredField(data, existing, 'title', 'title'),
     assumptionId: data.assumptionId !== undefined ? (data.assumptionId || null) : (existing?.assumptionId ?? null),
     researchQuestion: data.researchQuestion !== undefined ? String(data.researchQuestion) : (existing?.researchQuestion ?? ''),
     method: data.method !== undefined ? String(data.method) : (existing?.method ?? ''),
+    targetParticipant: data.targetParticipant !== undefined ? String(data.targetParticipant) : (existing?.targetParticipant ?? ''), // §6.8
     successThreshold: data.successThreshold !== undefined ? String(data.successThreshold) : (existing?.successThreshold ?? ''),
     failureThreshold: data.failureThreshold !== undefined ? String(data.failureThreshold) : (existing?.failureThreshold ?? ''),
+    timeLimit: data.timeLimit !== undefined ? String(data.timeLimit) : (existing?.timeLimit ?? ''),   // §6.8
+    costLimit: data.costLimit !== undefined ? String(data.costLimit) : (existing?.costLimit ?? ''),   // §6.8
     status: data.status !== undefined ? assertEnum(data.status, EXPERIMENT_STATUSES, 'status') : (existing?.status ?? 'planned'),
     results: data.results !== undefined ? String(data.results) : (existing?.results ?? ''),
     conclusion: data.conclusion !== undefined ? String(data.conclusion) : (existing?.conclusion ?? ''),
+    nextDecision: data.nextDecision !== undefined ? String(data.nextDecision) : (existing?.nextDecision ?? ''), // §6.8
   };
 }
 
@@ -164,11 +187,12 @@ function validateEvidence(data, existing) {
   return {
     sourceType: data.sourceType !== undefined ? assertEnum(data.sourceType, EVIDENCE_SOURCES, 'sourceType') : (existing?.sourceType ?? 'other'),
     evidenceKind: data.evidenceKind !== undefined ? assertEnum(data.evidenceKind, EVIDENCE_KINDS, 'evidenceKind') : (existing?.evidenceKind ?? requireEvidenceKind(existing)),
-    summary: data.summary !== undefined ? requireString(data.summary, 'summary') : existing?.summary,
+    summary: requiredField(data, existing, 'summary', 'summary'),
     contact: data.contact !== undefined ? String(data.contact) : (existing?.contact ?? ''),
     rawNotes: data.rawNotes !== undefined ? String(data.rawNotes) : (existing?.rawNotes ?? ''),
     tags: data.tags !== undefined ? validateTags(data.tags) : (existing?.tags ?? []),
     relatedAssumptionIds: data.relatedAssumptionIds !== undefined ? validateIdList(data.relatedAssumptionIds) : (existing?.relatedAssumptionIds ?? []),
+    relatedDecisionIds: data.relatedDecisionIds !== undefined ? validateIdList(data.relatedDecisionIds) : (existing?.relatedDecisionIds ?? []), // handoff §6.9
   };
 }
 function requireEvidenceKind(existing) {

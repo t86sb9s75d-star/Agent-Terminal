@@ -90,6 +90,17 @@ check('workstreamId is optional and stored as null when absent', () => {
 
 // ---- per-type validation ----
 
+check('required fields are enforced ON CREATE for every record type', () => {
+  // Regression: the create path must reject a record with no required field,
+  // not silently store title/statement/summary as undefined.
+  assert.throws(() => records.goals.create(wsA.id, {}), /title is required/);
+  assert.throws(() => records.tasks.create(wsA.id, {}), /title is required/);
+  assert.throws(() => records.assumptions.create(wsA.id, {}), /statement is required/);
+  assert.throws(() => records.experiments.create(wsA.id, {}), /title is required/);
+  assert.throws(() => records.decisions.create(wsA.id, {}), /decision must be a non-empty string/);
+  assert.throws(() => records.evidence.create(wsA.id, { evidenceKind: 'customer_statement' }), /summary is required/);
+});
+
 check('goal status enum enforced; milestones validated', () => {
   assert.throws(() => records.goals.create(wsA.id, { title: 'x', status: 'not_a_status' }), /status/);
   assert.throws(() => records.goals.create(wsA.id, { title: 'x', milestones: [{ label: 'm', weight: -1 }] }), /weight/);
@@ -188,6 +199,7 @@ check('agent settings default to least authority and reject unknown agents', () 
   assert.strictEqual(row.permissions.paid_model_calls, false);
   assert.strictEqual(row.permissions.read_workspace_data, true);
   assert.throws(() => agentSettings.upsert(wsA.id, 'interview_agent', { permissions: { made_up: true } }), /unknown permission/);
+  assert.throws(() => agentSettings.upsert(wsA.id, 'interview_agent', { config: ['not', 'an', 'object'] }), /config must be an object/);
 });
 
 check('agent settings are workspace-scoped', () => {
