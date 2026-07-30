@@ -849,6 +849,168 @@ async function run() {
     }
   });
 
+  // ---------------- Feature Onboard (Phase 3) API tests ----------------
+  // Full HTTP coverage of the workspace operating layer: workspace scoping,
+  // server-computed progress, YC, onboarding, and restart persistence.
+
+  const json = async (res) => ({ status: res.status, body: await res.json().catch(() => null) });
+  const post = (base, p, b) => fetch(`${base}${p}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) });
+  const put = (base, p, b) => fetch(`${base}${p}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) });
+
+  await check('two workspaces keep their records strictly separated over HTTP', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const a = (await json(await post(server.baseUrl, '/api/workspaces', { name: 'Alpha' }))).body;
+      const b = (await json(await post(server.baseUrl, '/api/workspaces', { name: 'Beta' }))).body;
+
+      const goalA = (await json(await post(server.baseUrl, `/api/workspaces/${a.id}/goals`, { title: 'A goal' }))).body;
+      await post(server.baseUrl, `/api/workspaces/${b.id}/goals`, { title: 'B goal' });
+
+      // list is scoped
+      const aList = (await json(await fetch(`${server.baseUrl}/api/workspaces/${a.id}/goals`))).body;
+      const bList = (await json(await fetch(`${server.baseUrl}/api/workspaces/${b.id}/goals`))).body;
+      assert.strictEqual(aList.length, 1);
+      assert.strictEqual(bList.length, 1);
+      assert.strictEqual(aList[0].title, 'A goal');
+
+      // cross-workspace GET of A's goal under B is a 404, not a leak
+      const cross = await json(await fetch(`${server.baseUrl}/api/workspaces/${b.id}/goals/${goalA.id}`));
+      assert.strictEqual(cross.status, 404);
+      // cross-workspace PUT/DELETE under B must not touch A's goal
+      assert.strictEqual((await put(server.baseUrl, `/api/workspaces/${b.id}/goals/${goalA.id}`, { title: 'hijack' })).status, 404);
+      assert.strictEqual((await fetch(`${server.baseUrl}/api/workspaces/${b.id}/goals/${goalA.id}`, { method: 'DELETE' })).status, 404);
+      const stillA = (await json(await fetch(`${server.baseUrl}/api/workspaces/${a.id}/goals/${goalA.id}`))).body;
+      assert.strictEqual(stillA.title, 'A goal');
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('workspace progress is computed server-side from milestones, not trusted from the client', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const ws = (await json(await post(server.baseUrl, '/api/workspaces', { name: 'Prog' }))).body;
+      assert.strictEqual(ws.progress.progress, null); // no milestones yet -> null, not 0
+
+      // A client trying to assert its own progress must be ignored.
+      await post(server.baseUrl, `/api/workspaces/${ws.id}/goals`, { title: 'G', progress: 99, milestones: [{ label: 'a', done: true }, { label: 'b' }] });
+      const after = (await json(await fetch(`${server.baseUrl}/api/workspaces/${ws.id}`))).body;
+      assert.strictEqual(after.progress.progress, 50); // 1 of 2 milestones, server-computed
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('YC progress updates deterministically and rejects unknown items', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const ws = (await json(await post(server.baseUrl, '/api/workspaces', { name: 'YC', ycEnabled: true }))).body;
+      const before = (await json(await fetch(`${server.baseUrl}/api/workspaces/${ws.id}/yc`))).body;
+      assert.strictEqual(before.overall, 0);
+      assert.strictEqual(before.sections.length, 4);
+
+      const updated = (await json(await put(server.baseUrl, `/api/workspaces/${ws.id}/yc`, { itemId: 'ss_enrolled', done: true }))).body;
+      assert.ok(updated.overall > 0);
+
+      const bad = await json(await put(server.baseUrl, `/api/workspaces/${ws.id}/yc`, { itemId: 'not_real', done: true }));
+      assert.strictEqual(bad.status, 400);
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('unknown workspace id is a 404 on every scoped route', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      for (const p of ['/api/workspaces/ghost', '/api/workspaces/ghost/goals', '/api/workspaces/ghost/yc', '/api/workspaces/ghost/agents']) {
+        assert.strictEqual((await fetch(`${server.baseUrl}${p}`)).status, 404, `${p} should 404`);
+      }
+      assert.strictEqual((await post(server.baseUrl, '/api/workspaces/ghost/goals', { title: 'x' })).status, 404);
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('onboarding is first-run detectable, resumable, and completable over HTTP', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      assert.strictEqual((await json(await fetch(`${server.baseUrl}/api/onboarding`))).body, null); // first run
+      await post(server.baseUrl, '/api/onboarding/start');
+      await put(server.baseUrl, '/api/onboarding', { currentStep: 'workspace', draft: { name: 'Draft Co' } });
+      const mid = (await json(await fetch(`${server.baseUrl}/api/onboarding`))).body;
+      assert.strictEqual(mid.currentStep, 'workspace');
+      assert.strictEqual(mid.draft.name, 'Draft Co');
+      assert.strictEqual((await put(server.baseUrl, '/api/onboarding', { currentStep: 'bogus' })).status, 400);
+      await post(server.baseUrl, '/api/onboarding/complete', { skipped: false });
+      assert.strictEqual((await json(await fetch(`${server.baseUrl}/api/onboarding`))).body.completed, true);
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('workspaces and their records survive a server restart, and audit events are recorded', async () => {
+    const dataDir = freshDataDir();
+    let server = startServer(dataDir);
+    let wsId;
+    try {
+      await waitForReady(server.baseUrl);
+      const ws = (await json(await post(server.baseUrl, '/api/workspaces', { name: 'Persisted' }))).body;
+      wsId = ws.id;
+      await post(server.baseUrl, `/api/workspaces/${wsId}/decisions`, { decision: 'Use JSON files', reasoning: 'single operator' });
+      // audit event exists for the workspace creation
+      const activity = (await json(await fetch(`${server.baseUrl}/api/activity?limit=200`))).body;
+      assert.ok(activity.some((e) => e.action === 'workspace.created'), 'workspace.created audit event missing');
+    } finally {
+      await stopServer(server);
+    }
+    // Restart against the same data dir.
+    server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const list = (await json(await fetch(`${server.baseUrl}/api/workspaces`))).body;
+      assert.ok(list.some((w) => w.id === wsId), 'workspace did not survive restart');
+      const decisions = (await json(await fetch(`${server.baseUrl}/api/workspaces/${wsId}/decisions`))).body;
+      assert.strictEqual(decisions.length, 1);
+      assert.strictEqual(decisions[0].decision, 'Use JSON files');
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('existing agent and workstream APIs still work alongside Feature Onboard', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      // pre-existing endpoints unaffected by the new routes
+      const agent = (await json(await post(server.baseUrl, '/api/agents', { name: 'Legacy', provider: 'custom', command: 'echo hi' }))).body;
+      assert.ok(agent.id);
+      const ws = (await json(await post(server.baseUrl, '/api/workstreams', { name: 'Legacy WS' }))).body;
+      assert.ok(ws.id);
+      // and the new namespace coexists
+      assert.strictEqual((await fetch(`${server.baseUrl}/api/workspaces`)).status, 200);
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   console.log(`\n${passed} passed, ${failures.length} failed`);
   if (failures.length > 0) {
     for (const f of failures) console.error(`FAILED: ${f.name}\n${f.err.stack}`);
