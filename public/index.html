@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Rucker Park</title>
+  <link rel="icon" href="data:," />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -19,20 +20,26 @@
     <div class="shell-body">
       <nav class="rail">
         <button class="rail-item active" data-view="command"><span class="label">Command</span></button>
+        <button class="rail-item" data-view="business"><span class="label">Business</span></button>
+        <button class="rail-item" data-view="yc"><span class="label">YC</span></button>
         <button class="rail-item" data-view="workstreams"><span class="label">Workstreams</span></button>
         <button class="rail-item" data-view="agents"><span class="label">Agents</span></button>
         <button class="rail-item" data-view="activity"><span class="label">Activity</span></button>
         <button class="rail-item" data-view="security"><span class="label">Security</span></button>
+        <button class="rail-item" data-view="settings"><span class="label">Settings</span></button>
         <div class="rail-spacer"></div>
         <button class="rail-item rail-cta" id="new-agent-btn"><span class="label">+ New Agent</span></button>
       </nav>
 
       <main class="content">
         <section id="view-command" class="view"></section>
+        <section id="view-business" class="view hidden"></section>
+        <section id="view-yc" class="view hidden"></section>
         <section id="view-workstreams" class="view hidden"></section>
         <section id="view-agents" class="view hidden"></section>
         <section id="view-activity" class="view hidden"></section>
         <section id="view-security" class="view hidden"></section>
+        <section id="view-settings" class="view hidden"></section>
       </main>
     </div>
   </div>
@@ -139,6 +146,9 @@
     </div>
   </div>
 
+  <!-- Feature Onboard overlay (onboarding wizard + record editor dialog) is
+       created dynamically by onboard.js so the markup stays with its logic. -->
   <script src="app.js"></script>
+  <script src="onboard.js"></script>
 </body>
 </html>
