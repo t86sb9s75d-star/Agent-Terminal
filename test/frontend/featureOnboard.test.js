@@ -77,6 +77,31 @@ async function seedWorkspace(base, name, extra = {}) {
   return ws;
 }
 
+// ---------------------------------------------------------------------------
+// The authoritative workspace-owned record types, read from the BACKEND rather
+// than restated here. A hard-coded copy is exactly how tasks and experiments
+// came to have stores, validation, API routes and recovery registration while
+// being unreachable by any operator for a whole release — nothing compared the
+// two lists, so nothing failed.
+// ---------------------------------------------------------------------------
+const RECORD_STORES = require('../../src/workspaceRecordsStore').ALL;
+
+// Types deliberately not given an operator surface. Adding to this list is a
+// product decision that must be justified in docs/FEATURE_ONBOARD.md's Known
+// Limitations, not a way to silence the contract test. It is empty on purpose.
+const BACKEND_ONLY_RECORD_TYPES = [];
+
+// How to drive each type through the real UI. `tab` is the Business-view tab,
+// `titleField` the required field in its create dialog, `seed` an API payload.
+const RECORD_UI = {
+  goals: { tab: 'goals', add: 'goal', titleField: 'title', seed: (v) => ({ title: v }) },
+  tasks: { tab: 'tasks', add: 'task', titleField: 'title', seed: (v) => ({ title: v }) },
+  decisions: { tab: 'decisions', add: 'decision', titleField: 'decision', seed: (v) => ({ decision: v }) },
+  assumptions: { tab: 'assumptions', add: 'assumption', titleField: 'statement', seed: (v) => ({ statement: v }) },
+  experiments: { tab: 'experiments', add: 'experiment', titleField: 'title', seed: (v) => ({ title: v }) },
+  evidence: { tab: 'evidence', add: 'evidence', titleField: 'summary', seed: (v) => ({ summary: v, evidenceKind: 'customer_statement' }) },
+};
+
 let CHROMIUM = null;
 
 async function run() {
@@ -185,23 +210,208 @@ async function run() {
     assert.ok(!panel.includes('ALPHA-ONLY-GOAL'), 'B must NOT show A\'s goal');
   });
 
-  await check('[contract] every workspace-owned record type stays scoped in the UI', async ({ page, base }) => {
+  // R-008 — this case used to be named "every workspace-owned record type" while
+  // covering three of six, and it asserted only ABSENCE, so a renderer that drew
+  // nothing at all passed it. It now enumerates the backend's own list and
+  // asserts both directions for every type: each workspace shows its own record
+  // AND does not show the other's. A blank panel now fails on the positive half;
+  // a panel leaking everything fails on the negative half.
+  await check('[contract] every workspace-owned record type is isolated per workspace, both directions', async ({ page, base }) => {
     const a = await seedWorkspace(base, 'Alpha');
     const b = (await api(base, '/api/workspaces', 'POST', { name: 'Beta' })).body;
-    await api(base, `/api/workspaces/${a.id}/decisions`, 'POST', { decision: 'ALPHA-DECISION' });
-    await api(base, `/api/workspaces/${a.id}/assumptions`, 'POST', { statement: 'ALPHA-ASSUMPTION' });
-    await api(base, `/api/workspaces/${a.id}/evidence`, 'POST', { summary: 'ALPHA-EVIDENCE', evidenceKind: 'customer_statement' });
+
+    const types = Object.keys(RECORD_STORES).filter((t) => !BACKEND_ONLY_RECORD_TYPES.includes(t));
+    for (const type of types) {
+      const ui = RECORD_UI[type];
+      assert.ok(ui, `no UI mapping for record type "${type}" — add a surface or an allowlist entry`);
+      await api(base, `/api/workspaces/${a.id}/${type}`, 'POST', ui.seed(`ALPHA-${type.toUpperCase()}`));
+      await api(base, `/api/workspaces/${b.id}/${type}`, 'POST', ui.seed(`BETA-${type.toUpperCase()}`));
+    }
 
     await page.goto(base, { waitUntil: 'networkidle' });
     await page.click('.rail-item[data-view="business"]');
     await page.waitForSelector('#fo-workspace');
-    await page.selectOption('#fo-workspace', b.id);
-    await page.waitForTimeout(400);
-    for (const tab of ['decisions', 'assumptions', 'evidence']) {
-      await page.click(`[data-fo-tab="${tab}"]`);
+
+    for (const [ws, mine, theirs] of [[a, 'ALPHA', 'BETA'], [b, 'BETA', 'ALPHA']]) {
+      await page.selectOption('#fo-workspace', ws.id);
+      await page.waitForTimeout(400);
+      for (const type of types) {
+        await page.click(`[data-fo-tab="${RECORD_UI[type].tab}"]`);
+        await page.waitForTimeout(200);
+        const panel = await page.textContent('#fo-business-panel');
+        // POSITIVE: a blank renderer must not be able to pass this.
+        assert.ok(panel.includes(`${mine}-${type.toUpperCase()}`), `${ws.name} must render its own ${type}`);
+        // NEGATIVE: a renderer returning every workspace's data must not pass.
+        assert.ok(!panel.includes(`${theirs}-${type.toUpperCase()}`), `${ws.name} must NOT render the other workspace's ${type}`);
+      }
+    }
+  });
+
+  // The reachability contract. Deliberately not satisfied by the presence of a
+  // DOM tab: it creates each record type through the real dialog against a real
+  // server and asserts the result renders, so a tab that lists nothing, cannot
+  // create, or posts to a route that does not exist all fail here.
+  await check('[contract] every backend record type is reachable and usable from the Business view', async ({ page, base }) => {
+    await seedWorkspace(base, 'Reach');
+    await page.goto(base, { waitUntil: 'networkidle' });
+    await page.click('.rail-item[data-view="business"]');
+    await page.waitForSelector('.fo-tab');
+
+    const backendTypes = Object.keys(RECORD_STORES);
+    const expected = backendTypes.filter((t) => !BACKEND_ONLY_RECORD_TYPES.includes(t));
+
+    // Every allowlist entry must name a type that actually exists, so the
+    // allowlist cannot rot into a list of typos that silently excuses nothing.
+    for (const t of BACKEND_ONLY_RECORD_TYPES) {
+      assert.ok(backendTypes.includes(t), `backend-only allowlist names "${t}", which is not a record store`);
+    }
+
+    for (const type of expected) {
+      const ui = RECORD_UI[type];
+      assert.ok(ui, `record type "${type}" has no UI mapping`);
+      const tab = await page.$(`[data-fo-tab="${ui.tab}"]`);
+      assert.ok(tab, `record type "${type}" has no Business-view tab (add one, or add a reviewed allowlist entry)`);
+
+      await page.click(`[data-fo-tab="${ui.tab}"]`);
       await page.waitForTimeout(200);
+
+      // empty state, before anything exists
+      const emptyPanel = await page.textContent('#fo-business-panel');
+      assert.ok(/No .*(yet|logged|captured)/i.test(emptyPanel), `${type} must show an empty state, got: ${emptyPanel.slice(0, 120)}`);
+
+      // create through the real dialog
+      const addBtn = await page.$(`[data-fo-add="${ui.add}"]`);
+      assert.ok(addBtn, `record type "${type}" has a tab but no create affordance`);
+      await addBtn.click();
+      await page.waitForSelector('.fo-modal');
+      const marker = `REACHABLE-${type.toUpperCase()}`;
+      await page.fill(`.fo-modal [name="${ui.titleField}"]`, marker);
+      await page.click('.fo-modal button[type="submit"]');
+      await page.waitForTimeout(500);
+
+      // and it must actually render back
       const panel = await page.textContent('#fo-business-panel');
-      assert.ok(!panel.includes('ALPHA-'), `workspace B must not render A's ${tab}`);
+      assert.ok(panel.includes(marker), `record type "${type}" was created but does not render in its own tab`);
+    }
+
+    // No dead pluralisation branches: every type pluralOf() knows about must be
+    // one the operator can reach (this is how `task`/`experiment` sat in
+    // pluralOf for a release while nothing could call them).
+    const known = await page.evaluate(() => Array.from(document.querySelectorAll('[data-fo-tab]')).map((el) => el.dataset.foTab));
+    for (const type of expected) {
+      assert.ok(known.includes(RECORD_UI[type].tab), `tab "${RECORD_UI[type].tab}" is missing from the rendered tablist`);
+    }
+  });
+
+  await check('[smoke] a task and an experiment survive a reload with their fields intact', async ({ page, base }) => {
+    const ws = await seedWorkspace(base, 'Persist');
+    await page.goto(base, { waitUntil: 'networkidle' });
+    await page.click('.rail-item[data-view="business"]');
+    await page.waitForSelector('.fo-tab');
+
+    await page.click('[data-fo-tab="tasks"]');
+    await page.click('[data-fo-add="task"]');
+    await page.waitForSelector('.fo-modal');
+    await page.fill('.fo-modal [name="title"]', 'Call ten roofers');
+    await page.fill('.fo-modal [name="notes"]', 'Ask what they quote on');
+    await page.click('.fo-modal button[type="submit"]');
+    await page.waitForTimeout(400);
+
+    await page.click('[data-fo-tab="experiments"]');
+    await page.click('[data-fo-add="experiment"]');
+    await page.waitForSelector('.fo-modal');
+    await page.fill('.fo-modal [name="title"]', 'Landing page smoke test');
+    await page.fill('.fo-modal [name="successThreshold"]', '20 signups in 2 weeks');
+    await page.fill('.fo-modal [name="failureThreshold"]', 'fewer than 5 signups');
+    await page.click('.fo-modal button[type="submit"]');
+    await page.waitForTimeout(400);
+
+    // reload: the record must come back from disk, not from page state
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.click('.rail-item[data-view="business"]');
+    await page.waitForSelector('.fo-tab');
+
+    await page.click('[data-fo-tab="tasks"]');
+    await page.waitForTimeout(300);
+    let panel = await page.textContent('#fo-business-panel');
+    assert.ok(panel.includes('Call ten roofers'), 'task did not survive reload');
+    assert.ok(panel.includes('Ask what they quote on'), 'task notes are not rendered');
+
+    await page.click('[data-fo-tab="experiments"]');
+    await page.waitForTimeout(300);
+    panel = await page.textContent('#fo-business-panel');
+    assert.ok(panel.includes('Landing page smoke test'), 'experiment did not survive reload');
+    // Both thresholds must be visible: an experiment that only shows its
+    // success bar cannot disconfirm anything, which is the whole point.
+    assert.ok(panel.includes('20 signups in 2 weeks'), 'success threshold is not rendered');
+    assert.ok(panel.includes('fewer than 5 signups'), 'failure threshold is not rendered');
+
+    // the API agrees with what the UI shows
+    const xs = (await api(base, `/api/workspaces/${ws.id}/experiments`)).body;
+    assert.strictEqual(xs.length, 1);
+    assert.strictEqual(xs[0].failureThreshold, 'fewer than 5 signups');
+  });
+
+  await check('[regression] a record can be corrected in place, not only deleted and retyped', async ({ page, base }) => {
+    // Before this, goals/tasks/assumptions/evidence/experiments could be
+    // created and hard-deleted but never edited: the only way to fix a typo
+    // was to destroy the record and its history.
+    const ws = await seedWorkspace(base, 'Edit');
+    await api(base, `/api/workspaces/${ws.id}/goals`, 'POST', { title: 'Frist paying customer' });
+    await page.goto(base, { waitUntil: 'networkidle' });
+    await page.click('.rail-item[data-view="business"]');
+    await page.waitForSelector('.fo-tab');
+    await page.click('[data-fo-tab="goals"]');
+    await page.waitForTimeout(300);
+
+    await page.click('[data-fo-edit="goal"]');
+    await page.waitForSelector('.fo-modal');
+    // the dialog must arrive PREFILLED — an empty edit form silently wipes fields
+    assert.strictEqual(await page.inputValue('.fo-modal [name="title"]'), 'Frist paying customer');
+    await page.fill('.fo-modal [name="title"]', 'First paying customer');
+    await page.click('.fo-modal button[type="submit"]');
+    await page.waitForTimeout(500);
+
+    const panel = await page.textContent('#fo-business-panel');
+    assert.ok(panel.includes('First paying customer'), 'the corrected title must render');
+    assert.ok(!panel.includes('Frist'), 'the typo must be gone');
+
+    // corrected in place: still one record, same id, history not destroyed
+    const goals = (await api(base, `/api/workspaces/${ws.id}/goals`)).body;
+    assert.strictEqual(goals.length, 1, 'editing must not create a second record');
+    assert.strictEqual(goals[0].title, 'First paying customer');
+  });
+
+  await check('[contract] a failed record load renders an error, not an empty state', async ({ page, base, server }) => {
+    // A degraded store (503 STORE_DEGRADED) previously left the panel blank,
+    // which is indistinguishable from "you have no records yet" — the operator
+    // would read a real integrity problem as an empty workspace.
+    const ws = await seedWorkspace(base, 'Degraded');
+    await api(base, `/api/workspaces/${ws.id}/goals`, 'POST', { title: 'Some goal' });
+    await h.stopServer(server);
+
+    // corrupt the goals store beyond recovery: no valid backup to fall back to
+    const path = require('path');
+    fs.writeFileSync(path.join(server.dataDir, 'workspace_goals.json'), '{ this is not json');
+    fs.rmSync(path.join(server.dataDir, 'backups', 'workspace_goals'), { recursive: true, force: true });
+
+    const restarted = h.startServer(server.dataDir);
+    try {
+      await h.waitForReady(restarted.baseUrl);
+      await page.goto(restarted.baseUrl, { waitUntil: 'networkidle' });
+      await page.click('.rail-item[data-view="business"]');
+      await page.waitForSelector('#view-business .fo-error', { timeout: 10000 });
+      const alert = await page.$('#view-business .fo-error');
+      assert.strictEqual(await alert.getAttribute('role'), 'alert', 'the error must be announced, not only visible');
+      const view = await page.textContent('#view-business');
+      assert.ok(/could not load/i.test(view), 'the error must say the load failed');
+      // The worst outcome, and the one this guards: a degraded store made the
+      // list endpoint 503, which left state.workspaces empty, which rendered
+      // "No workspaces yet" — telling the operator their data does not exist.
+      assert.ok(!/No workspaces yet/i.test(view), 'an unreadable store must never be shown as "no workspaces"');
+      assert.ok(!/No goals yet/i.test(view), 'a failed load must never be shown as an empty state');
+    } finally {
+      await h.stopServer(restarted);
     }
   });
 

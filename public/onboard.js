@@ -42,6 +42,7 @@
     workspaces: [],
     activeWorkspaceId: null,
     records: {}, // { goals: [], tasks: [], decisions: [], assumptions: [], experiments: [], evidence: [] }
+    loadError: null, // last workspace-detail load failure, rendered rather than swallowed
     yc: null,
     agents: { agents: [], recommended: [] },
     profile: null,
@@ -49,11 +50,18 @@
     businessTab: 'command', // command | goals | decisions | assumptions | evidence | agents
   };
 
+  // Every workspace-owned record type the backend defines must appear here
+  // (or on the reviewed backend-only allowlist in the reachability contract —
+  // test/frontend/featureOnboard.test.js). Tasks and experiments were absent
+  // for a whole release: stores, validation, API routes and recovery
+  // registration all existed, and an operator could not see them.
   const RECORD_TABS = [
     { id: 'command', label: 'Command Center' },
     { id: 'goals', label: 'Goals' },
+    { id: 'tasks', label: 'Tasks' },
     { id: 'decisions', label: 'Decisions' },
     { id: 'assumptions', label: 'Assumptions & Risks' },
+    { id: 'experiments', label: 'Experiments' },
     { id: 'evidence', label: 'Evidence' },
     { id: 'agents', label: 'Agents' },
   ];
@@ -75,28 +83,49 @@
     state.catalog = catalog;
   }
   async function loadWorkspaces() {
+    state.loadError = null;
     state.workspaces = await api('/api/workspaces');
     if (!state.activeWorkspaceId && state.workspaces.length) state.activeWorkspaceId = state.workspaces[0].id;
     if (state.activeWorkspaceId && !activeWorkspace()) state.activeWorkspaceId = state.workspaces[0]?.id || null;
   }
   async function loadActiveWorkspaceDetail() {
     const id = state.activeWorkspaceId;
+    state.loadError = null;
     if (!id) { state.records = {}; state.yc = null; state.agents = { agents: [], recommended: [] }; return; }
-    const [goals, decisions, assumptions, evidence, yc, agents] = await Promise.all([
-      api(`/api/workspaces/${id}/goals`),
-      api(`/api/workspaces/${id}/decisions`),
-      api(`/api/workspaces/${id}/assumptions`),
-      api(`/api/workspaces/${id}/evidence`),
-      api(`/api/workspaces/${id}/yc`),
-      api(`/api/workspaces/${id}/agents`),
-    ]);
-    state.records = { goals, decisions, assumptions, evidence };
-    state.yc = yc;
-    state.agents = agents;
+    try {
+      const [goals, tasks, decisions, assumptions, experiments, evidence, yc, agents] = await Promise.all([
+        api(`/api/workspaces/${id}/goals`),
+        api(`/api/workspaces/${id}/tasks`),
+        api(`/api/workspaces/${id}/decisions`),
+        api(`/api/workspaces/${id}/assumptions`),
+        api(`/api/workspaces/${id}/experiments`),
+        api(`/api/workspaces/${id}/evidence`),
+        api(`/api/workspaces/${id}/yc`),
+        api(`/api/workspaces/${id}/agents`),
+      ]);
+      state.records = { goals, tasks, decisions, assumptions, experiments, evidence };
+      state.yc = yc;
+      state.agents = agents;
+    } catch (err) {
+      // A failed load must SAY so. Leaving the panel blank makes a degraded
+      // store (503 STORE_DEGRADED) look identical to "you have no records
+      // yet" — the operator would read a real integrity problem as an empty
+      // workspace. The error state is rendered by errorBanner() below.
+      state.loadError = err.message;
+      state.records = {};
+      state.yc = null;
+      state.agents = { agents: [], recommended: [] };
+    }
   }
 
   // ---------- generic UI bits ----------
   function empty(msg) { return `<div class="empty-state">${esc(msg)}</div>`; }
+
+  // Distinct from empty(): "we could not load this" must never be shown as
+  // "there is nothing here". role="alert" so it is announced, not just seen.
+  function errorBanner(msg) {
+    return `<div class="fo-error" role="alert">Could not load this workspace's records: ${esc(msg)}</div>`;
+  }
   function pill(text, cls) { return `<span class="fo-pill ${cls || ''}">${esc(text)}</span>`; }
 
   // Accessible meter: shows a numeric value AND a text label so meaning is
@@ -119,6 +148,13 @@
   function renderBusiness() {
     const host = $('view-business');
     if (!host) return;
+    // Checked BEFORE the empty case on purpose: when a load failed we have no
+    // workspaces in state, and "no workspaces" and "could not read them" must
+    // never render the same way.
+    if (state.loadError) {
+      host.innerHTML = `<div class="view-header"><h2 class="view-heading">Business</h2></div>${errorBanner(state.loadError)}`;
+      return;
+    }
     if (state.workspaces.length === 0) {
       host.innerHTML = `
         <div class="view-header"><h2 class="view-heading">Business</h2></div>
@@ -150,11 +186,14 @@
 
   function renderBusinessPanel(ws) {
     if (!ws) return empty('Select a workspace.');
+    if (state.loadError) return errorBanner(state.loadError);
     switch (state.businessTab) {
       case 'command': return renderCommandCenter(ws);
       case 'goals': return renderGoals(ws);
+      case 'tasks': return renderTasks(ws);
       case 'decisions': return renderDecisions(ws);
       case 'assumptions': return renderAssumptions(ws);
+      case 'experiments': return renderExperiments(ws);
       case 'evidence': return renderEvidence(ws);
       case 'agents': return renderAgentsCatalog(ws);
       default: return '';
@@ -226,7 +265,72 @@
           <div class="fo-record-main"><span class="fo-record-title">${esc(g.title)}</span> ${pill(g.status, 'fo-pill-status')}</div>
           ${g.description ? `<div class="fo-record-sub">${esc(g.description)}</div>` : ''}
           <div class="fo-record-foot">${(g.milestones || []).length} milestone(s)${g.targetDate ? ` · target ${esc(g.targetDate)}` : ''}
-            <button class="fo-del" data-fo-del="goal" data-id="${attr(g.id)}" aria-label="Delete goal">Delete</button></div>
+            <button class="fo-edit" data-fo-edit="goal" data-id="${attr(g.id)}" aria-label="Edit goal ${attr(g.title)}">Edit</button>
+            <button class="fo-del" data-fo-del="goal" data-id="${attr(g.id)}" aria-label="Delete goal ${attr(g.title)}">Delete</button></div>
+        </div>`).join('')}</div>`}`;
+  }
+
+  // Reusable status <select>. Backed by a real PUT to the record's route, so
+  // the control is not decorative — the lifecycle the backend defines is the
+  // lifecycle the operator can actually move a record through.
+  function statusSelect(type, id, current, statuses, label) {
+    return `<select class="fo-inline-select" data-fo-status="${attr(type)}" data-id="${attr(id)}" aria-label="${attr(label)}">
+      ${statuses.map((s) => `<option value="${attr(s)}" ${s === current ? 'selected' : ''}>${esc(s.replace(/_/g, ' '))}</option>`).join('')}
+    </select>`;
+  }
+
+  const TASK_STATUSES = ['todo', 'in_progress', 'done', 'cancelled'];
+  function renderTasks(ws) {
+    const rows = state.records.tasks || [];
+    const goals = state.records.goals || [];
+    const goalName = (id) => (goals.find((g) => g.id === id) || {}).title;
+    return `${recordListHeader('Tasks', '+ Add task', 'task')}
+      <p class="fo-hint">Concrete work items. A task may optionally hang off a goal; tasks with no goal are ordinary standalone work, not orphans.</p>
+      ${rows.length === 0 ? empty('No tasks yet.') : `<div class="fo-records">${rows.map((t) => `
+        <div class="fo-record">
+          <div class="fo-record-main"><span class="fo-record-title">${esc(t.title)}</span> ${pill(t.status.replace(/_/g, ' '), 'fo-pill-status')}</div>
+          ${t.notes ? `<div class="fo-record-sub">${esc(t.notes)}</div>` : ''}
+          <div class="fo-record-foot">
+            ${statusSelect('task', t.id, t.status, TASK_STATUSES, `Status for task ${t.title}`)}
+            ${t.goalId ? pill(`goal: ${goalName(t.goalId) || 'unknown'}`, '') : ''}
+            <button class="fo-edit" data-fo-edit="task" data-id="${attr(t.id)}" aria-label="Edit task ${attr(t.title)}">Edit</button>
+            <button class="fo-del" data-fo-del="task" data-id="${attr(t.id)}" aria-label="Delete task ${attr(t.title)}">Delete</button></div>
+        </div>`).join('')}</div>`}`;
+  }
+
+  // Experiment Builder. The point of an experiment here is to test a named
+  // assumption against thresholds decided BEFORE it runs — so the form asks
+  // for the success and failure thresholds up front, and the list shows them
+  // next to the result. Every field below exists in the backend schema; none
+  // is invented, and nothing here schedules, executes or automates anything.
+  const EXPERIMENT_STATUSES = ['planned', 'running', 'concluded', 'abandoned'];
+  function renderExperiments(ws) {
+    const rows = state.records.experiments || [];
+    const assumptions = state.records.assumptions || [];
+    const assumptionText = (id) => (assumptions.find((a) => a.id === id) || {}).statement;
+    const detail = (label, value) => (value ? `<div class="fo-xp-row"><span class="fo-xp-l">${esc(label)}</span><span class="fo-xp-v">${esc(value)}</span></div>` : '');
+    return `${recordListHeader('Experiments', '+ Design experiment', 'experiment')}
+      <p class="fo-hint">Decide what would count as success <em>and</em> as failure before you run it. An experiment with no failure threshold cannot disconfirm anything.</p>
+      ${rows.length === 0 ? empty('No experiments yet. Design one to test an assumption.') : `<div class="fo-records">${rows.map((x) => `
+        <div class="fo-record fo-xp">
+          <div class="fo-record-main"><span class="fo-record-title">${esc(x.title)}</span> ${pill(x.status, 'fo-pill-status')}</div>
+          ${x.researchQuestion ? `<div class="fo-record-sub">${esc(x.researchQuestion)}</div>` : ''}
+          <div class="fo-xp-detail">
+            ${x.assumptionId ? detail('Tests assumption', assumptionText(x.assumptionId) || 'unknown assumption') : ''}
+            ${detail('Method', x.method)}
+            ${detail('Who', x.targetParticipant)}
+            ${detail('Success if', x.successThreshold)}
+            ${detail('Failure if', x.failureThreshold)}
+            ${detail('Time limit', x.timeLimit)}
+            ${detail('Cost limit', x.costLimit)}
+            ${detail('Results', x.results)}
+            ${detail('Conclusion', x.conclusion)}
+            ${detail('Next decision', x.nextDecision)}
+          </div>
+          <div class="fo-record-foot">
+            ${statusSelect('experiment', x.id, x.status, EXPERIMENT_STATUSES, `Status for experiment ${x.title}`)}
+            <button class="fo-edit" data-fo-edit="experiment" data-id="${attr(x.id)}" aria-label="Edit experiment ${attr(x.title)}">Edit</button>
+            <button class="fo-del" data-fo-del="experiment" data-id="${attr(x.id)}" aria-label="Delete experiment ${attr(x.title)}">Delete</button></div>
         </div>`).join('')}</div>`}`;
   }
 
@@ -254,7 +358,8 @@
         <div class="fo-record">
           <div class="fo-record-main"><span class="fo-record-title">${esc(a.statement)}</span> ${pill(a.kind, a.kind === 'risk' ? 'fo-pill-risk' : '')}</div>
           <div class="fo-record-foot">${pill(`status: ${a.status}`, 'fo-pill-status')} ${pill(`confidence: ${a.confidence}`, '')}
-            <button class="fo-del" data-fo-del="assumption" data-id="${attr(a.id)}" aria-label="Delete">Delete</button></div>
+            <button class="fo-edit" data-fo-edit="assumption" data-id="${attr(a.id)}" aria-label="Edit ${attr(a.statement)}">Edit</button>
+            <button class="fo-del" data-fo-del="assumption" data-id="${attr(a.id)}" aria-label="Delete ${attr(a.statement)}">Delete</button></div>
         </div>`).join('')}</div>`}`;
   }
 
@@ -267,7 +372,8 @@
         <div class="fo-record">
           <div class="fo-record-main"><span class="fo-record-title">${esc(e.summary)}</span> ${pill(kindLabel[e.evidenceKind] || e.evidenceKind, e.evidenceKind === 'transaction' ? 'fo-pill-strong' : '')}</div>
           <div class="fo-record-foot">${esc(e.sourceType)}${e.contact ? ` · ${esc(e.contact)}` : ''}
-            <button class="fo-del" data-fo-del="evidence" data-id="${attr(e.id)}" aria-label="Delete">Delete</button></div>
+            <button class="fo-edit" data-fo-edit="evidence" data-id="${attr(e.id)}" aria-label="Edit ${attr(e.summary)}">Edit</button>
+            <button class="fo-del" data-fo-del="evidence" data-id="${attr(e.id)}" aria-label="Delete ${attr(e.summary)}">Delete</button></div>
         </div>`).join('')}</div>`}`;
   }
 
@@ -385,7 +491,15 @@
         await loadActiveWorkspaceDetail();
       }
       if (view === 'settings' && state.profile === null) state.profile = await api('/api/profile');
-    } catch (err) { /* render will show whatever we have */ console.error(err); }
+    } catch (err) {
+      // This used to only console.error, so a 503 from a degraded store left
+      // state.workspaces empty and the view then rendered "No workspaces yet.
+      // Create your first business workspace to begin." — telling the operator
+      // their data does not exist when in fact it could not be read. A load
+      // failure must be reported as a load failure.
+      console.error(err);
+      state.loadError = err.message;
+    }
     renderCurrent();
   }
   function renderCurrent() {
@@ -410,13 +524,18 @@
   // =========================================================================
   function wireDelegation() {
     document.addEventListener('click', async (e) => {
-      const t = e.target.closest('[data-fo],[data-fo-tab],[data-fo-add],[data-fo-del]');
+      const t = e.target.closest('[data-fo],[data-fo-tab],[data-fo-add],[data-fo-edit],[data-fo-del]');
       if (!t) return;
       try {
         if (t.dataset.fo === 'new-workspace') { openWorkspaceDialog(); }
         else if (t.dataset.fo === 'reopen-onboarding') { await api('/api/onboarding/start', { method: 'POST' }); state.onboarding = await api('/api/onboarding'); openOnboarding(); }
         else if (t.dataset.foTab) { state.businessTab = t.dataset.foTab; renderBusiness(); }
         else if (t.dataset.foAdd) { openRecordDialog(t.dataset.foAdd); }
+        else if (t.dataset.foEdit) {
+          const type = t.dataset.foEdit;
+          const existing = (state.records[pluralOf(type)] || []).find((r) => r.id === t.dataset.id);
+          if (existing) openRecordDialog(type, existing);
+        }
         else if (t.dataset.foDel) {
           const type = t.dataset.foDel; const id = t.dataset.id;
           await api(`/api/workspaces/${state.activeWorkspaceId}/${pluralOf(type)}/${id}`, { method: 'DELETE' });
@@ -436,8 +555,11 @@
         } else if (el.dataset.foAgent) {
           await api(`/api/workspaces/${state.activeWorkspaceId}/agents/${el.dataset.foAgent}`, { method: 'PUT', body: JSON.stringify({ enabled: el.checked }) });
           await loadActiveWorkspaceDetail();
-        } else if (el.dataset.foStatus === 'decision') {
-          await api(`/api/workspaces/${state.activeWorkspaceId}/decisions/${el.dataset.id}`, { method: 'PUT', body: JSON.stringify({ status: el.value }) });
+        } else if (el.dataset.foStatus) {
+          // decisions, tasks and experiments all expose their lifecycle this
+          // way; the route is derived from the type rather than hard-coded.
+          const type = el.dataset.foStatus;
+          await api(`/api/workspaces/${state.activeWorkspaceId}/${pluralOf(type)}/${el.dataset.id}`, { method: 'PUT', body: JSON.stringify({ status: el.value }) });
           await loadActiveWorkspaceDetail(); renderBusiness();
         }
       } catch (err) { alert(err.message); await loadActiveWorkspaceDetail(); renderCurrent(); }
@@ -475,13 +597,18 @@
     return close;
   }
 
+  // `value` prefills the control, which is what makes one form definition
+  // serve both create and edit. Note that a prefilled value is
+  // operator-controlled data re-entering the DOM: the input goes through
+  // attr() (attribute context) and the textarea through esc() (text context).
   function field(name, label, opts = {}) {
-    const { type = 'text', required = false, placeholder = '', textarea = false, options } = opts;
+    const { type = 'text', required = false, placeholder = '', textarea = false, options, value } = opts;
+    const v = value === undefined || value === null ? '' : String(value);
     if (options) {
-      return `<label>${esc(label)}<select name="${attr(name)}">${options.map((o) => `<option value="${attr(o.value)}">${esc(o.label)}</option>`).join('')}</select></label>`;
+      return `<label>${esc(label)}<select name="${attr(name)}">${options.map((o) => `<option value="${attr(o.value)}" ${String(o.value) === v ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select></label>`;
     }
-    if (textarea) return `<label>${esc(label)}<textarea name="${attr(name)}" rows="3" placeholder="${attr(placeholder)}"></textarea></label>`;
-    return `<label>${esc(label)}<input type="${attr(type)}" name="${attr(name)}" ${required ? 'required' : ''} placeholder="${attr(placeholder)}"/></label>`;
+    if (textarea) return `<label>${esc(label)}<textarea name="${attr(name)}" rows="3" placeholder="${attr(placeholder)}">${esc(v)}</textarea></label>`;
+    return `<label>${esc(label)}<input type="${attr(type)}" name="${attr(name)}" ${required ? 'required' : ''} placeholder="${attr(placeholder)}" value="${attr(v)}"/></label>`;
   }
 
   function openWorkspaceDialog() {
@@ -501,38 +628,114 @@
       });
   }
 
-  function openRecordDialog(type) {
-    const wsId = state.activeWorkspaceId;
-    let body; let build;
-    if (type === 'goal') {
-      body = field('title', 'Title', { required: true }) + field('description', 'Description', { textarea: true }) + field('targetDate', 'Target date', { type: 'date' });
-      build = (fd) => ({ title: fd.get('title'), description: fd.get('description'), targetDate: fd.get('targetDate') || null });
-    } else if (type === 'decision') {
-      body = field('decision', 'Decision', { required: true }) + field('reasoning', 'Reasoning', { textarea: true }) + field('alternatives', 'Alternatives considered', { textarea: true });
-      build = (fd) => ({ decision: fd.get('decision'), reasoning: fd.get('reasoning'), alternatives: fd.get('alternatives') });
-    } else if (type === 'assumption') {
-      body = field('statement', 'Statement', { required: true }) +
-        field('kind', 'Kind', { options: [{ value: 'assumption', label: 'Assumption' }, { value: 'risk', label: 'Risk' }] }) +
-        field('confidence', 'Confidence', { options: [{ value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }] });
-      build = (fd) => ({ statement: fd.get('statement'), kind: fd.get('kind'), confidence: fd.get('confidence') });
-    } else if (type === 'evidence') {
-      body = field('summary', 'Summary', { required: true }) +
-        field('evidenceKind', 'What is this?', { options: [
-          { value: 'customer_statement', label: 'A customer SAID something' },
-          { value: 'customer_behavior', label: 'A customer DID something' },
-          { value: 'transaction', label: 'A payment / commitment' },
-          { value: 'founder_belief', label: 'A founder belief' },
-        ] }) +
-        field('sourceType', 'Source', { options: [
-          { value: 'interview', label: 'Interview' }, { value: 'survey', label: 'Survey' }, { value: 'email', label: 'Email' },
-          { value: 'call', label: 'Call' }, { value: 'usage', label: 'Usage' }, { value: 'document', label: 'Document' }, { value: 'other', label: 'Other' },
-        ] }) +
-        field('contact', 'Contact (optional)');
-      build = (fd) => ({ summary: fd.get('summary'), evidenceKind: fd.get('evidenceKind'), sourceType: fd.get('sourceType'), contact: fd.get('contact') });
-    } else { return; }
+  // One form definition per record type, used for BOTH create and edit. Two
+  // separate definitions would drift; the previous code had create-only forms
+  // and no edit at all, which left delete-and-retype as the only way to fix a
+  // typo. `editable: false` means the backend genuinely refuses the update —
+  // it is not a UI shortcut.
+  const RECORD_FORMS = {
+    goal: {
+      editable: true,
+      fields: (r) => field('title', 'Title', { required: true, value: r?.title })
+        + field('description', 'Description', { textarea: true, value: r?.description })
+        + field('targetDate', 'Target date', { type: 'date', value: r?.targetDate }),
+      build: (fd) => ({ title: fd.get('title'), description: fd.get('description'), targetDate: fd.get('targetDate') || null }),
+    },
+    task: {
+      editable: true,
+      fields: (r) => field('title', 'Title', { required: true, value: r?.title })
+        + field('status', 'Status', { value: r?.status, options: TASK_STATUSES.map((s) => ({ value: s, label: s.replace(/_/g, ' ') })) })
+        + field('goalId', 'Belongs to goal (optional)', {
+          value: r?.goalId,
+          options: [{ value: '', label: '— none —' }].concat((state.records.goals || []).map((g) => ({ value: g.id, label: g.title }))),
+        })
+        + field('notes', 'Notes', { textarea: true, value: r?.notes }),
+      build: (fd) => ({ title: fd.get('title'), status: fd.get('status'), goalId: fd.get('goalId') || null, notes: fd.get('notes') }),
+    },
+    // Decisions are immutable except status (enforced server-side), so there
+    // is no edit form — the status <select> in the list is the only mutation.
+    decision: {
+      editable: false,
+      fields: () => field('decision', 'Decision', { required: true })
+        + field('reasoning', 'Reasoning', { textarea: true })
+        + field('alternatives', 'Alternatives considered', { textarea: true })
+        + field('reconsiderWhen', 'Reconsider when', { placeholder: 'What would make you revisit this?' }),
+      build: (fd) => ({ decision: fd.get('decision'), reasoning: fd.get('reasoning'), alternatives: fd.get('alternatives'), reconsiderWhen: fd.get('reconsiderWhen') }),
+    },
+    assumption: {
+      editable: true,
+      fields: (r) => field('statement', 'Statement', { required: true, value: r?.statement })
+        + field('kind', 'Kind', { value: r?.kind, options: [{ value: 'assumption', label: 'Assumption' }, { value: 'risk', label: 'Risk' }] })
+        + field('confidence', 'Confidence', { value: r?.confidence, options: [{ value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }] })
+        + field('plannedTest', 'How would you test it?', { value: r?.plannedTest })
+        + field('owner', 'Owner (optional)', { value: r?.owner })
+        + field('reviewDate', 'Review date (optional)', { type: 'date', value: r?.reviewDate }),
+      build: (fd) => ({
+        statement: fd.get('statement'), kind: fd.get('kind'), confidence: fd.get('confidence'),
+        plannedTest: fd.get('plannedTest'), owner: fd.get('owner'), reviewDate: fd.get('reviewDate') || null,
+      }),
+    },
+    experiment: {
+      editable: true,
+      fields: (r) => field('title', 'Title', { required: true, value: r?.title })
+        + field('assumptionId', 'Assumption being tested (optional)', {
+          value: r?.assumptionId,
+          options: [{ value: '', label: '— none —' }].concat((state.records.assumptions || []).map((a) => ({ value: a.id, label: a.statement }))),
+        })
+        + field('researchQuestion', 'Research question', { textarea: true, value: r?.researchQuestion, placeholder: 'What are you actually trying to find out?' })
+        + field('method', 'Method', { value: r?.method, placeholder: 'e.g. 10 customer interviews' })
+        + field('targetParticipant', 'Who will you test with?', { value: r?.targetParticipant })
+        + field('successThreshold', 'Success if…', { value: r?.successThreshold, placeholder: 'Decide before running' })
+        + field('failureThreshold', 'Failure if…', { value: r?.failureThreshold, placeholder: 'Decide before running' })
+        + field('timeLimit', 'Time limit', { value: r?.timeLimit, placeholder: 'e.g. 2 weeks' })
+        + field('costLimit', 'Cost limit', { value: r?.costLimit, placeholder: 'e.g. $200' })
+        + field('results', 'Results (once run)', { textarea: true, value: r?.results })
+        + field('conclusion', 'Conclusion', { textarea: true, value: r?.conclusion })
+        + field('nextDecision', 'What will you do about it?', { value: r?.nextDecision }),
+      build: (fd) => ({
+        title: fd.get('title'), assumptionId: fd.get('assumptionId') || null,
+        researchQuestion: fd.get('researchQuestion'), method: fd.get('method'), targetParticipant: fd.get('targetParticipant'),
+        successThreshold: fd.get('successThreshold'), failureThreshold: fd.get('failureThreshold'),
+        timeLimit: fd.get('timeLimit'), costLimit: fd.get('costLimit'),
+        results: fd.get('results'), conclusion: fd.get('conclusion'), nextDecision: fd.get('nextDecision'),
+      }),
+    },
+    evidence: {
+      editable: true,
+      fields: (r) => field('summary', 'Summary', { required: true, value: r?.summary })
+        + field('evidenceKind', 'What is this?', {
+          value: r?.evidenceKind,
+          options: [
+            { value: 'customer_statement', label: 'A customer SAID something' },
+            { value: 'customer_behavior', label: 'A customer DID something' },
+            { value: 'transaction', label: 'A payment / commitment' },
+            { value: 'founder_belief', label: 'A founder belief' },
+          ],
+        })
+        + field('sourceType', 'Source', {
+          value: r?.sourceType,
+          options: [
+            { value: 'interview', label: 'Interview' }, { value: 'survey', label: 'Survey' }, { value: 'email', label: 'Email' },
+            { value: 'call', label: 'Call' }, { value: 'usage', label: 'Usage' }, { value: 'document', label: 'Document' }, { value: 'other', label: 'Other' },
+          ],
+        })
+        + field('contact', 'Contact (optional)', { value: r?.contact })
+        + field('rawNotes', 'Raw notes', { textarea: true, value: r?.rawNotes }),
+      build: (fd) => ({
+        summary: fd.get('summary'), evidenceKind: fd.get('evidenceKind'), sourceType: fd.get('sourceType'),
+        contact: fd.get('contact'), rawNotes: fd.get('rawNotes'),
+      }),
+    },
+  };
 
-    modal(`New ${type}`, body, async (fd) => {
-      await api(`/api/workspaces/${wsId}/${pluralOf(type)}`, { method: 'POST', body: JSON.stringify(build(fd)) });
+  function openRecordDialog(type, existing = null) {
+    const form = RECORD_FORMS[type];
+    if (!form) return;
+    const wsId = state.activeWorkspaceId;
+    const editing = Boolean(existing);
+    modal(editing ? `Edit ${type}` : `New ${type}`, form.fields(existing), async (fd) => {
+      const path = `/api/workspaces/${wsId}/${pluralOf(type)}${editing ? `/${existing.id}` : ''}`;
+      await api(path, { method: editing ? 'PUT' : 'POST', body: JSON.stringify(form.build(fd)) });
       await loadActiveWorkspaceDetail(); renderCurrent();
     });
   }

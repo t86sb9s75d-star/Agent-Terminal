@@ -1020,8 +1020,31 @@ button { font-family: inherit; font-size: inherit; color: inherit; }
 .fo-record-title { font-weight: var(--weight-medium); }
 .fo-record-sub { color: var(--text-muted); font-size: var(--text-small); margin-top: 4px; }
 .fo-record-foot { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: var(--text-small); color: var(--text-muted); flex-wrap: wrap; }
+/* Edit sits before Delete and pushes it right, so the destructive action is
+   never the one the eye lands on first and never shares its styling. */
+.fo-edit { background: none; border: none; color: var(--text-muted); cursor: pointer; font: inherit; margin-left: auto; }
+.fo-edit:hover { color: var(--text); text-decoration: underline; }
 .fo-del { background: none; border: none; color: var(--red); cursor: pointer; font: inherit; margin-left: auto; }
+.fo-edit + .fo-del { margin-left: 0; }
 .fo-del:hover { text-decoration: underline; }
+
+/* A failed load is NOT an empty state — it gets its own treatment so the two
+   can never be mistaken for each other at a glance. */
+.fo-error {
+  border: 1px solid var(--red); border-left-width: 3px; border-radius: var(--radius-md);
+  background: var(--bg-inset); color: var(--text); padding: 12px 14px; font-size: var(--text-small);
+}
+
+/* Experiment detail: a plain label/value list, deliberately not a card grid —
+   thresholds are meant to be read as a sentence, in order, before the run. */
+.fo-xp-detail { margin-top: 8px; display: grid; gap: 4px; }
+.fo-xp-row { display: grid; grid-template-columns: 140px 1fr; gap: 10px; font-size: var(--text-small); }
+.fo-xp-l { color: var(--text-faint); }
+.fo-xp-v { color: var(--text-muted); overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .fo-xp-row { grid-template-columns: 1fr; gap: 0; }
+  .fo-xp-l { font-size: var(--text-tiny, 11px); text-transform: uppercase; letter-spacing: var(--tracking-wide); }
+}
 .fo-inline-select { background: var(--bg-inset); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 3px 8px; font: inherit; }
 
 .fo-agent-group { margin-bottom: 20px; }
