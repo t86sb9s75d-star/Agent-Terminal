@@ -52,6 +52,41 @@ const api = (base, path, method = 'GET', body) => fetch(`${base}${path}`, {
   method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined,
 }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
 
+// Assert that `needle` appears in `selector`, waiting for it rather than
+// sleeping first. A mutation here means POST -> reload eight endpoints ->
+// re-render, and a fixed sleep that is generous on a developer machine is not
+// generous on a loaded CI runner. This failed exactly that way in CI on a
+// 500ms sleep, so every "content appears after an action" assertion goes
+// through here.
+//
+// It is still a real assertion: it throws with the same message on timeout,
+// and it cannot pass by the content never rendering.
+async function expectText(page, selector, needle, message) {
+  try {
+    await page.waitForFunction(
+      ({ sel, txt }) => {
+        const el = document.querySelector(sel);
+        return Boolean(el && el.textContent.includes(txt));
+      },
+      { sel: selector, txt: needle },
+      { timeout: 10000 }
+    );
+  } catch {
+    const actual = await page.textContent(selector).catch(() => '(selector not found)');
+    throw new assert.AssertionError({
+      message: `${message || `expected ${selector} to contain ${JSON.stringify(needle)}`}\n  actual: ${String(actual).slice(0, 300)}`,
+    });
+  }
+}
+
+// The negative counterpart. Deliberately requires the caller to have already
+// established a positive signal (via expectText or a waitForSelector), because
+// "text is absent" is trivially true before anything renders.
+async function expectNoText(page, selector, needle, message) {
+  const actual = await page.textContent(selector);
+  assert.ok(!actual.includes(needle), message || `${selector} must not contain ${JSON.stringify(needle)}`);
+}
+
 // Drive the wizard from welcome to a completed workspace.
 async function completeOnboarding(page, workspaceName) {
   await page.waitForSelector('.fo-wizard', { timeout: 10000 });
@@ -213,18 +248,13 @@ async function run() {
     await page.waitForSelector('#fo-workspace');
     await page.selectOption('#fo-workspace', a.id);
     await page.click('[data-fo-tab="goals"]');
-    await page.waitForTimeout(300);
-    let panel = await page.textContent('#fo-business-panel');
-    assert.ok(panel.includes('ALPHA-ONLY-GOAL'), 'A shows its own goal');
-    assert.ok(!panel.includes('BETA-ONLY-GOAL'), 'A must NOT show B\'s goal');
+    await expectText(page, '#fo-business-panel', 'ALPHA-ONLY-GOAL', 'A shows its own goal');
+    await expectNoText(page, '#fo-business-panel', 'BETA-ONLY-GOAL', 'A must NOT show B\'s goal');
 
     await page.selectOption('#fo-workspace', b.id);
-    await page.waitForTimeout(400);
     await page.click('[data-fo-tab="goals"]');
-    await page.waitForTimeout(200);
-    panel = await page.textContent('#fo-business-panel');
-    assert.ok(panel.includes('BETA-ONLY-GOAL'), 'B shows its own goal');
-    assert.ok(!panel.includes('ALPHA-ONLY-GOAL'), 'B must NOT show A\'s goal');
+    await expectText(page, '#fo-business-panel', 'BETA-ONLY-GOAL', 'B shows its own goal');
+    await expectNoText(page, '#fo-business-panel', 'ALPHA-ONLY-GOAL', 'B must NOT show A\'s goal');
   });
 
   // R-008 — this case used to be named "every workspace-owned record type" while
@@ -254,12 +284,11 @@ async function run() {
       await page.waitForTimeout(400);
       for (const type of types) {
         await page.click(`[data-fo-tab="${RECORD_UI[type].tab}"]`);
-        await page.waitForTimeout(200);
-        const panel = await page.textContent('#fo-business-panel');
-        // POSITIVE: a blank renderer must not be able to pass this.
-        assert.ok(panel.includes(`${mine}-${type.toUpperCase()}`), `${ws.name} must render its own ${type}`);
+        // POSITIVE first, and it WAITS: a blank renderer cannot pass this, and
+        // a slow render cannot make the negative assertion below vacuous.
+        await expectText(page, '#fo-business-panel', `${mine}-${type.toUpperCase()}`, `${ws.name} must render its own ${type}`);
         // NEGATIVE: a renderer returning every workspace's data must not pass.
-        assert.ok(!panel.includes(`${theirs}-${type.toUpperCase()}`), `${ws.name} must NOT render the other workspace's ${type}`);
+        await expectNoText(page, '#fo-business-panel', `${theirs}-${type.toUpperCase()}`, `${ws.name} must NOT render the other workspace's ${type}`);
       }
     }
   });
@@ -304,11 +333,7 @@ async function run() {
       const marker = `REACHABLE-${type.toUpperCase()}`;
       await page.fill(`.fo-modal [name="${ui.titleField}"]`, marker);
       await page.click('.fo-modal button[type="submit"]');
-      await page.waitForTimeout(500);
-
-      // and it must actually render back
-      const panel = await page.textContent('#fo-business-panel');
-      assert.ok(panel.includes(marker), `record type "${type}" was created but does not render in its own tab`);
+      await expectText(page, '#fo-business-panel', marker, `record type "${type}" was created but does not render in its own tab`);
     }
 
     // No dead pluralisation branches: every type pluralOf() knows about must be
@@ -349,15 +374,12 @@ async function run() {
     await page.waitForSelector('.fo-tab');
 
     await page.click('[data-fo-tab="tasks"]');
-    await page.waitForTimeout(300);
-    let panel = await page.textContent('#fo-business-panel');
-    assert.ok(panel.includes('Call ten roofers'), 'task did not survive reload');
-    assert.ok(panel.includes('Ask what they quote on'), 'task notes are not rendered');
+    await expectText(page, '#fo-business-panel', 'Call ten roofers', 'task did not survive reload');
+    await expectText(page, '#fo-business-panel', 'Ask what they quote on', 'task notes are not rendered');
 
     await page.click('[data-fo-tab="experiments"]');
-    await page.waitForTimeout(300);
-    panel = await page.textContent('#fo-business-panel');
-    assert.ok(panel.includes('Landing page smoke test'), 'experiment did not survive reload');
+    await expectText(page, '#fo-business-panel', 'Landing page smoke test', 'experiment did not survive reload');
+    let panel = await page.textContent('#fo-business-panel');
     // Both thresholds must be visible: an experiment that only shows its
     // success bar cannot disconfirm anything, which is the whole point.
     assert.ok(panel.includes('20 signups in 2 weeks'), 'success threshold is not rendered');
@@ -387,11 +409,8 @@ async function run() {
     assert.strictEqual(await page.inputValue('.fo-modal [name="title"]'), 'Frist paying customer');
     await page.fill('.fo-modal [name="title"]', 'First paying customer');
     await page.click('.fo-modal button[type="submit"]');
-    await page.waitForTimeout(500);
-
-    const panel = await page.textContent('#fo-business-panel');
-    assert.ok(panel.includes('First paying customer'), 'the corrected title must render');
-    assert.ok(!panel.includes('Frist'), 'the typo must be gone');
+    await expectText(page, '#fo-business-panel', 'First paying customer', 'the corrected title must render');
+    await expectNoText(page, '#fo-business-panel', 'Frist', 'the typo must be gone');
 
     // corrected in place: still one record, same id, history not destroyed
     const goals = (await api(base, `/api/workspaces/${ws.id}/goals`)).body;
@@ -517,8 +536,7 @@ async function run() {
     await page.waitForSelector('.fo-modal');
     await page.fill('.fo-modal [name="title"]', 'Still editable');
     await page.click('.fo-modal button[type="submit"]');
-    await page.waitForTimeout(500);
-    assert.ok((await page.textContent('#fo-business-panel')).includes('Still editable'));
+    await expectText(page, '#fo-business-panel', 'Still editable', 'an archived workspace must still accept new records');
 
     // and it is reversible through the same control
     await page.click('[data-fo="toggle-archive"]');
@@ -540,9 +558,7 @@ async function run() {
     await page.fill('.fo-modal [name="name"]', 'Apparel Co');
     await page.fill('.fo-modal [name="targetDate"]', '2026-12-31');
     await page.click('.fo-modal button[type="submit"]');
-    await page.waitForTimeout(600);
-
-    assert.ok((await page.textContent('.fo-cc-name')).includes('Apparel Co'));
+    await expectText(page, '.fo-cc-name', 'Apparel Co', 'the renamed workspace must render');
     const after = (await api(base, '/api/workspaces')).body;
     assert.strictEqual(after.length, 1, 'editing must not create a second workspace');
     assert.strictEqual(after[0].id, ws.id);
