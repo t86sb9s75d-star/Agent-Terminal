@@ -178,9 +178,12 @@
         <div class="fo-ws-select">
           <label class="fo-inline-label" for="fo-workspace">Workspace</label>
           <select id="fo-workspace" aria-label="Active workspace">${options}</select>
+          <button class="btn" data-fo="edit-workspace">Edit</button>
+          <button class="btn" data-fo="toggle-archive">${ws && ws.archived ? 'Unarchive' : 'Archive'}</button>
           <button class="btn" data-fo="new-workspace">+ New</button>
         </div>
       </div>
+      ${ws && ws.archived ? `<div class="fo-archived-note" role="status">This workspace is archived. Its records are still readable and editable; archiving is a way to move it out of the way, not a lock.</div>` : ''}
       <div class="fo-tabs" role="tablist" aria-label="Workspace sections">${tabs}</div>
       <div class="fo-tabpanel" id="fo-business-panel" role="tabpanel">${renderBusinessPanel(ws)}</div>`;
   }
@@ -584,6 +587,18 @@
           renderBusiness();
         }
         else if (t.dataset.fo === 'new-workspace') { openWorkspaceDialog(); }
+        else if (t.dataset.fo === 'edit-workspace') { openWorkspaceDialog(activeWorkspace()); }
+        else if (t.dataset.fo === 'toggle-archive') {
+          // Reversible either way, and the button says which direction it
+          // goes, so there is nothing ambiguous to confirm. The archived
+          // workspace stays selected and readable — archiving is not deletion
+          // and must not behave like it.
+          const ws = activeWorkspace();
+          if (ws) {
+            await api(`/api/workspaces/${ws.id}/archive`, { method: 'POST', body: JSON.stringify({ archived: !ws.archived }) });
+            await loadWorkspaces(); await loadActiveWorkspaceDetail(); renderCurrent();
+          }
+        }
         else if (t.dataset.fo === 'reopen-onboarding') { await api('/api/onboarding/start', { method: 'POST' }); state.onboarding = await api('/api/onboarding'); openOnboarding(); }
         else if (t.dataset.foTab) { state.businessTab = t.dataset.foTab; renderBusiness(); }
         else if (t.dataset.foAdd) { openRecordDialog(t.dataset.foAdd); }
@@ -678,20 +693,27 @@
     return `<label>${esc(label)}<input type="${attr(type)}" name="${attr(name)}" ${required ? 'required' : ''} placeholder="${attr(placeholder)}" value="${attr(v)}"/></label>`;
   }
 
-  function openWorkspaceDialog() {
+  // Create and edit share one dialog, for the same reason the record forms do.
+  function openWorkspaceDialog(existing = null) {
     const stageOpts = state.stages.map((s) => ({ value: s.id, label: s.label }));
-    modal('New business workspace',
-      field('name', 'Name', { required: true, placeholder: 'e.g. Apparel company' }) +
-      field('description', 'Description', { textarea: true, placeholder: 'What is this business?' }) +
-      field('stage', 'Current stage', { options: stageOpts }) +
-      field('primaryGoal', 'Primary goal', { placeholder: 'e.g. First 10 paying customers' }) +
-      `<label class="fo-checkbox-label"><input type="checkbox" name="ycEnabled"/> Preparing for YC</label>`,
+    const editing = Boolean(existing);
+    modal(editing ? 'Edit workspace' : 'New business workspace',
+      field('name', 'Name', { required: true, placeholder: 'e.g. Apparel company', value: existing?.name }) +
+      field('description', 'Description', { textarea: true, placeholder: 'What is this business?', value: existing?.description }) +
+      field('stage', 'Current stage', { options: stageOpts, value: existing?.stage }) +
+      field('primaryGoal', 'Primary goal', { placeholder: 'e.g. First 10 paying customers', value: existing?.primaryGoal }) +
+      field('targetDate', 'Target date (optional)', { type: 'date', value: existing?.targetDate }) +
+      `<label class="fo-checkbox-label"><input type="checkbox" name="ycEnabled" ${existing?.ycEnabled ? 'checked' : ''}/> Preparing for YC</label>`,
       async (fd) => {
-        const ws = await api('/api/workspaces', { method: 'POST', body: JSON.stringify({
+        const body = JSON.stringify({
           name: fd.get('name'), description: fd.get('description'), stage: fd.get('stage'),
-          primaryGoal: fd.get('primaryGoal'), ycEnabled: fd.get('ycEnabled') === 'on',
-        }) });
-        await loadWorkspaces(); state.activeWorkspaceId = ws.id; await loadActiveWorkspaceDetail(); renderCurrent();
+          primaryGoal: fd.get('primaryGoal'), targetDate: fd.get('targetDate') || null,
+          ycEnabled: fd.get('ycEnabled') === 'on',
+        });
+        const ws = await api(editing ? `/api/workspaces/${existing.id}` : '/api/workspaces', { method: editing ? 'PUT' : 'POST', body });
+        await loadWorkspaces();
+        state.activeWorkspaceId = ws.id;
+        await loadActiveWorkspaceDetail(); renderCurrent();
       });
   }
 

@@ -449,6 +449,63 @@ async function run() {
     assert.notDeepStrictEqual(earlyRecs.sort(), lateRecs.sort(), 'recommendations must differ by stage');
   });
 
+  await check('[regression] a workspace can be archived and unarchived from the interface', async ({ page, base }) => {
+    // The selector already rendered "(archived)" while the only way to enter
+    // or leave that state was curl — the operator could see a state they
+    // could not reach or escape.
+    const ws = await seedWorkspace(base, 'Archivable');
+    await page.goto(base, { waitUntil: 'networkidle' });
+    await page.click('.rail-item[data-view="business"]');
+    await page.waitForSelector('[data-fo="toggle-archive"]');
+    assert.strictEqual((await page.textContent('[data-fo="toggle-archive"]')).trim(), 'Archive');
+
+    await page.click('[data-fo="toggle-archive"]');
+    await page.waitForTimeout(600);
+    assert.strictEqual((await page.textContent('[data-fo="toggle-archive"]')).trim(), 'Unarchive', 'the control must flip direction');
+    assert.ok((await page.textContent('#fo-workspace')).includes('(archived)'), 'the selector must show the archived state');
+    assert.ok(await page.$('.fo-archived-note'), 'an archived workspace must explain what archiving does');
+    assert.strictEqual((await api(base, '/api/workspaces')).body.find((w) => w.id === ws.id).archived, true);
+
+    // archiving is not a lock: records stay readable and creatable
+    await page.click('[data-fo-tab="goals"]');
+    await page.click('[data-fo-add="goal"]');
+    await page.waitForSelector('.fo-modal');
+    await page.fill('.fo-modal [name="title"]', 'Still editable');
+    await page.click('.fo-modal button[type="submit"]');
+    await page.waitForTimeout(500);
+    assert.ok((await page.textContent('#fo-business-panel')).includes('Still editable'));
+
+    // and it is reversible through the same control
+    await page.click('[data-fo="toggle-archive"]');
+    await page.waitForTimeout(600);
+    assert.strictEqual((await page.textContent('[data-fo="toggle-archive"]')).trim(), 'Archive');
+    assert.strictEqual((await api(base, '/api/workspaces')).body.find((w) => w.id === ws.id).archived, false);
+    assert.strictEqual(await page.$('.fo-archived-note'), null);
+  });
+
+  await check('[regression] a workspace can be edited in place from the interface', async ({ page, base }) => {
+    const ws = await seedWorkspace(base, 'Typo Co', { stage: 'problem_discovery' });
+    await page.goto(base, { waitUntil: 'networkidle' });
+    await page.click('.rail-item[data-view="business"]');
+    await page.waitForSelector('[data-fo="edit-workspace"]');
+    await page.click('[data-fo="edit-workspace"]');
+    await page.waitForSelector('.fo-modal');
+    assert.strictEqual(await page.inputValue('.fo-modal [name="name"]'), 'Typo Co', 'the edit dialog must be prefilled');
+    assert.strictEqual(await page.inputValue('.fo-modal [name="stage"]'), 'problem_discovery', 'the current stage must be preselected');
+    await page.fill('.fo-modal [name="name"]', 'Apparel Co');
+    await page.fill('.fo-modal [name="targetDate"]', '2026-12-31');
+    await page.click('.fo-modal button[type="submit"]');
+    await page.waitForTimeout(600);
+
+    assert.ok((await page.textContent('.fo-cc-name')).includes('Apparel Co'));
+    const after = (await api(base, '/api/workspaces')).body;
+    assert.strictEqual(after.length, 1, 'editing must not create a second workspace');
+    assert.strictEqual(after[0].id, ws.id);
+    assert.strictEqual(after[0].name, 'Apparel Co');
+    assert.strictEqual(after[0].targetDate, '2026-12-31');
+    assert.strictEqual(after[0].stage, 'problem_discovery', 'an untouched field must survive the edit');
+  });
+
   // ---------------- permission review (R-002, R-004) ----------------
 
   const CAPABILITIES = require('../../src/permissions').CAPABILITIES;

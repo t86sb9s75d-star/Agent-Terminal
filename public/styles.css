@@ -1047,6 +1047,14 @@ button { font-family: inherit; font-size: inherit; color: inherit; }
 }
 .fo-inline-select { background: var(--bg-inset); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 3px 8px; font: inherit; }
 
+/* Archived is a state to notice, not an alarm — bordered, not coloured red,
+   because nothing is wrong and nothing is locked. */
+.fo-archived-note {
+  border: 1px solid var(--border); border-left-width: 3px; border-radius: var(--radius-md);
+  background: var(--bg-inset); color: var(--text-muted); padding: 10px 14px;
+  font-size: var(--text-small); margin-bottom: 12px;
+}
+
 /* Permission review. A plain list, not a control panel: the visual weight is
    on the classification text, because that is the part an operator can be
    wrong about. No green/red status colouring — "recorded only" is not a

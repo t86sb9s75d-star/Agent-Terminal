@@ -221,6 +221,23 @@ unknown one; the stores additionally key every operation on
 Errors use the existing stable shape: `{ error, code, requestId }`. Meaningful
 mutations emit audit events.
 
+### Routes with no operator interface
+
+A route existing is not the same as a capability being delivered. These are
+**API-only** — reachable with `curl`, deliberately not surfaced in the UI:
+
+| Route | Why there is no interface |
+|---|---|
+| `GET /api/workspaces/:workspaceId` | the UI always works from the decorated list, so a single-workspace read has no surface |
+| `GET /api/workspaces/:workspaceId/{type}/:id` | records are rendered from the list response; a single-record read has no surface |
+
+Everything else under `/api` that Feature Onboard registers **is** reachable
+through the interface, and that is enforced rather than asserted:
+`test/routeCoverage.test.js` collects the routes from the real registration
+function and fails if a route is unclassified, if a classified route has been
+removed, or if a route claimed to be operator-reachable has no call site in
+`public/onboard.js`.
+
 ## Testing
 
 | Layer | Command | Count |
