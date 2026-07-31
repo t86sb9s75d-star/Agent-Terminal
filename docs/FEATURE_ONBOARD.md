@@ -285,8 +285,8 @@ removed, or if a route claimed to be operator-reachable has no call site in
 |---|---|---|
 | Unit | `npm run test:unit` | 97 |
 | Integration (real HTTP, real server) | `npm run test:integration` | 35 |
-| Frontend (real Chromium) | `npm run test:frontend` | 40 |
-| Everything | `npm run test:all` | **172** |
+| Frontend (real Chromium) | `npm run test:frontend` | 41 |
+| Everything | `npm run test:all` | **173** |
 
 CI (`.github/workflows/ci.yml`) runs all three plus a syntax check, `npm audit`,
 and a working-tree-clean gate, on pull requests and pushes to `main` and
@@ -350,32 +350,38 @@ Named rather than hidden. These are accepted, not oversights:
    experiments their assumption text with a `find()` inside a `map()`.
    Irrelevant at realistic record counts, quadratic at large ones. Tracked as
    A-006.
-10. **No test exercises concurrent operator actions.** Every case in every layer
+10. **The browser harness leaks a Chromium process and temp directory if the
+   suite is killed mid-run** (not on a normal failure — `check()` cleans up in a
+   `finally`). An orphan causes CPU contention that shows up as flaky failures
+   in later runs. If two consecutive runs fail on *different* tests, check for
+   orphaned `chrome-linux/chrome` processes and `/tmp/rucker-fe-*` directories
+   before investigating either test. (A-008)
+11. **No test exercises concurrent operator actions.** Every case in every layer
    is sequential, so the suite is structurally unable to observe a race unless
    one is forced explicitly. Two of the findings above were only found by
    deliberately inducing concurrency. This is the largest known gap in the test
    strategy, not an oversight in any single test.
-11. **Budget enforcement is a lower bound.** A model genuinely absent from the
+12. **Budget enforcement is a lower bound.** A model genuinely absent from the
    pricing table still yields `costUsd: null` and stays outside `knownCost`.
-12. **Real paid-call accounting is not verified end-to-end** — doing so would
+13. **Real paid-call accounting is not verified end-to-end** — doing so would
    require real spend or SDK mocking, neither done.
-13. **Pricing-table drift is unguarded.** Rates in `src/pricing.js` are
+14. **Pricing-table drift is unguarded.** Rates in `src/pricing.js` are
    hand-maintained; a published price change goes stale silently.
-14. **`maxTokens` default (`|| 1024`) is duplicated** in both provider workers.
+15. **`maxTokens` default (`|| 1024`) is duplicated** in both provider workers.
    Same shape as the effective-model defect, but it affects no accounting.
-15. **Historical runs are not backfilled.** Runs recorded before the
+16. **Historical runs are not backfilled.** Runs recorded before the
    effective-model fix keep `model: null`.
-16. **Record deletion is a hard delete** (audit-logged, but the record is gone).
-17. **Single-process only.** Every store assumes one process owns the data
+17. **Record deletion is a hard delete** (audit-logged, but the record is gone).
+18. **Single-process only.** Every store assumes one process owns the data
    directory (`instanceLock.js`). No multi-process or multi-instance safety is
    claimed.
-18. **`public/app.js` (the pre-Feature-Onboard UI) still has unhardened
+19. **`public/app.js` (the pre-Feature-Onboard UI) still has unhardened
     interpolation sites** in the Security/Sentinel view. Feature Onboard's own
     UI (`public/onboard.js`) escapes every operator-controlled value, but the
     legacy file was deliberately not rewritten in this work.
-19. **Optional `workstreamId` references are not existence-checked.** A record
+20. **Optional `workstreamId` references are not existence-checked.** A record
     may point at a workstream that was later removed; this is preferred over
     letting an unrelated deletion invalidate a record.
-20. **No accessibility audit by a real screen reader.** Semantics are asserted
+21. **No accessibility audit by a real screen reader.** Semantics are asserted
     programmatically (roles, `aria-valuetext`, focus, Escape), which is not the
     same as verified assistive-technology behavior.

@@ -51,6 +51,8 @@ Severity is about consequence to the operator, not effort to fix.
 | A-004 | hostile review | Medium | API contract | documented | oversized request body returns 500, not a documented error |
 | A-005 | hostile review | Low | dead code | fixed | added a dead export in the same branch that removed one |
 | A-006 | hostile review | Low | performance | documented | O(n*m) rendering in the two new tabs |
+| A-007 | mutation sweep | Medium | test blind spot | fixed | the detail-load error path was uncovered; only the list-load path was tested |
+| A-008 | mutation sweep | Low | process hygiene | documented | the browser harness leaks Chromium and a temp dir when the suite is killed |
 
 ---
 
@@ -745,6 +747,53 @@ Severity is about consequence to the operator, not effort to fix.
   per experiment, i.e. `find()` inside `map()`, re-run on every re-render.
   Irrelevant at realistic counts. Fix is a `Map` built once per render.
 
+## A-007 — Only one of the two UI error paths was covered
+
+- **Phase**: mutation sweep · **Severity**: Medium · **Category**: test blind spot · **Status**: fixed
+- **Files**: `public/onboard.js`, `test/frontend/featureOnboard.test.js`
+- **Found by**: a 20-mutation sweep. Deleting `state.loadError = err.message`
+  from `loadActiveWorkspaceDetail()`'s catch left the entire suite green — the
+  only survivor of 20.
+- **Root cause of the gap**: there are two distinct failure paths. The existing
+  case corrupted `workspace_goals.json`, which `GET /api/workspaces` itself
+  reads, so the workspace LIST failed and `activate()`'s catch handled it. The
+  detail-load catch was never reached by any test. The mutation removed the
+  uncovered one.
+- **The uncovered scenario is real**: corrupt a record store the list does not
+  read (decisions, tasks, assumptions, experiments, evidence). The list
+  succeeds, the workspace renders, and only the detail load fails — which
+  previously would have rendered as an empty tab rather than an error.
+- **Fix**: a second case corrupting `workspace_decisions.json`, which first
+  asserts the list still returns 200 and the record route returns 503 — so it
+  cannot silently degenerate into a duplicate of the other path — then asserts
+  the error banner appears and neither "No decisions logged" nor "No workspaces
+  yet" is rendered. The two cases are now named for the path each covers.
+- **Fail-without proof**: with the assignment removed the new case fails; the
+  suite goes 41 -> 40 passed, 1 failed.
+- **Generalizes**: yes — two code paths that produce the same *symptom* need two
+  tests. Coverage of the symptom is not coverage of the paths.
+
+## A-008 — The browser harness leaks a Chromium process when killed
+
+- **Phase**: mutation sweep · **Severity**: Low · **Category**: process hygiene · **Status**: documented
+- **File**: `test/frontend/harness.js` / the suite's `check()` wrapper
+- **Symptom**: after a sweep run was terminated by a timeout, a headless
+  Chromium (and a `/tmp/rucker-fe-*` directory) survived. The resulting CPU
+  contention produced **false failures** in two subsequent runs — a different
+  test each time, which is the signature of environment rather than defect.
+  Both runs went green immediately after killing the orphan.
+- **Root cause**: `check()` closes the browser and removes the data directory in
+  a `finally`, which covers a normal assertion failure but not process
+  termination. Exactly the F-001 shape, one level up: cleanup registered for
+  exceptions but not for signals.
+- **Why documented rather than fixed**: this affects the test harness under
+  abnormal termination, not the product, and the correct fix (signal handlers
+  tracking live browsers) is the same change F-001 made for temp directories.
+  Recorded so the next flake investigation starts by checking for orphans.
+- **Diagnostic worth keeping**: two consecutive runs failing on *different*
+  tests is evidence of environment, not of either test. Confirmed by cleaning
+  up and re-running twice: 41/41 both times.
+
 ---
 
 ## Patterns that recur across these findings
@@ -771,3 +820,11 @@ Stated once here rather than repeated in every entry.
 10. **Fixing one defect can create another of a different family.** A-002 was
    introduced by the fix for R-013. The correct move was not a better patch but
    a different contract — which is what Phase 9 supplies.
+11. **A mutation that silently fails to apply is a fake proof.** The sweep
+   verifies each edit actually changed the file before running anything; two
+   earlier hand-run "proofs" in this project had not been checked that way.
+12. **Two code paths with the same symptom need two tests.** A-007: covering
+   "the UI shows an error" once left the second path that produces it entirely
+   unguarded.
+13. **Consecutive runs failing on DIFFERENT tests means environment, not
+   defect.** A-008. Check for orphaned processes before touching code.

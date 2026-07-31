@@ -466,7 +466,46 @@ async function run() {
     assert.strictEqual(goals[0].title, 'First paying customer');
   });
 
-  await check('[contract] a failed record load renders an error, not an empty state', async ({ page, base, server }) => {
+  await check('[contract] a failed RECORD load renders an error, not an empty tab', async ({ page, base, server }) => {
+    // There are TWO distinct failure paths and they need separate cases.
+    // The one below corrupts the goals store, which GET /api/workspaces itself
+    // reads — so the workspace LIST fails and activate()'s catch handles it.
+    // This case corrupts a store the list does NOT read, so the list succeeds,
+    // the workspace renders, and only loadActiveWorkspaceDetail()'s catch runs.
+    //
+    // A mutation sweep proved that path was uncovered: deleting
+    // `state.loadError = err.message` from loadActiveWorkspaceDetail left the
+    // whole suite green, because every existing case reached the other catch.
+    const ws = await seedWorkspace(base, 'PartialDegrade');
+    await api(base, `/api/workspaces/${ws.id}/decisions`, 'POST', { decision: 'Some decision' });
+    await h.stopServer(server);
+
+    const path = require('path');
+    fs.writeFileSync(path.join(server.dataDir, 'workspace_decisions.json'), '{ truncated mid-write');
+    fs.rmSync(path.join(server.dataDir, 'backups', 'workspace_decisions'), { recursive: true, force: true });
+
+    const restarted = h.startServer(server.dataDir);
+    try {
+      await h.waitForReady(restarted.baseUrl);
+      // the list itself must still work — otherwise this is the other path again
+      const list = await api(restarted.baseUrl, '/api/workspaces');
+      assert.strictEqual(list.status, 200, 'the workspace list must still succeed, or this case tests the wrong path');
+      assert.strictEqual((await api(restarted.baseUrl, `/api/workspaces/${ws.id}/decisions`)).status, 503,
+        'the decisions store must actually be degraded');
+
+      await page.goto(restarted.baseUrl, { waitUntil: 'networkidle' });
+      await page.click('.rail-item[data-view="business"]');
+      await page.waitForSelector('#view-business .fo-error', { timeout: 10000 });
+      const view = await page.textContent('#view-business');
+      assert.ok(/could not load/i.test(view), 'a failed record load must say the load failed');
+      assert.ok(!/No decisions logged/i.test(view), 'a degraded record store must never render as an empty tab');
+      assert.ok(!/No workspaces yet/i.test(view), 'and never as "no workspaces"');
+    } finally {
+      await h.stopServer(restarted);
+    }
+  });
+
+  await check('[contract] a failed WORKSPACE LIST renders an error, not an empty state', async ({ page, base, server }) => {
     // A degraded store (503 STORE_DEGRADED) previously left the panel blank,
     // which is indistinguishable from "you have no records yet" — the operator
     // would read a real integrity problem as an empty workspace.
@@ -572,8 +611,10 @@ async function run() {
     assert.strictEqual((await page.textContent('[data-fo="toggle-archive"]')).trim(), 'Archive');
 
     await page.click('[data-fo="toggle-archive"]');
-    await page.waitForTimeout(600);
-    assert.strictEqual((await page.textContent('[data-fo="toggle-archive"]')).trim(), 'Unarchive', 'the control must flip direction');
+    // Wait for the control to actually flip rather than sleeping a guessed
+    // interval. A fixed 600ms here produced a false FAIL under CPU contention
+    // during a mutation sweep while passing in isolation.
+    await expectText(page, '[data-fo="toggle-archive"]', 'Unarchive', 'the control must flip direction');
     assert.ok((await page.textContent('#fo-workspace')).includes('(archived)'), 'the selector must show the archived state');
     assert.ok(await page.$('.fo-archived-note'), 'an archived workspace must explain what archiving does');
     assert.strictEqual((await api(base, '/api/workspaces')).body.find((w) => w.id === ws.id).archived, true);
@@ -588,8 +629,7 @@ async function run() {
 
     // and it is reversible through the same control
     await page.click('[data-fo="toggle-archive"]');
-    await page.waitForTimeout(600);
-    assert.strictEqual((await page.textContent('[data-fo="toggle-archive"]')).trim(), 'Archive');
+    await expectText(page, '[data-fo="toggle-archive"]', 'Archive', 'the control must flip back');
     assert.strictEqual((await api(base, '/api/workspaces')).body.find((w) => w.id === ws.id).archived, false);
     assert.strictEqual(await page.$('.fo-archived-note'), null);
   });
@@ -873,7 +913,9 @@ async function run() {
     // the text is still visible to the operator
     assert.ok((await page.textContent('.fo-cc-name')).includes('<script>'), 'the literal text should be shown');
     await page.click('[data-fo-tab="goals"]');
-    await page.waitForTimeout(300);
+    // Gate the negative assertion on the payload actually being rendered.
+    // Without this, an unpainted tab makes "nothing executed" trivially true.
+    await expectText(page, '#fo-business-panel', 'onerror', 'the goal payload must render as literal text first');
     assert.strictEqual(await page.evaluate(() => window.__pwned), undefined);
   });
 
@@ -904,7 +946,9 @@ async function run() {
       await page.click('.rail-item[data-view="business"]');
       await page.waitForSelector('.fo-tab');
       await page.click('[data-fo-tab="goals"]');
-      await page.waitForTimeout(400);
+      // The tampered record must be on screen before "no attribute was forged"
+      // means anything — an empty panel forges nothing either.
+      await expectText(page, '#fo-business-panel', 'Tampered', 'the tampered goal must render before asserting no forgery');
       const forged = await page.evaluate(() => document.querySelectorAll('#view-business [onmouseover]').length);
       assert.strictEqual(forged, 0, 'a malicious id must not be able to forge an event-handler attribute');
       assert.strictEqual(await page.evaluate(() => window.__pwned), undefined, 'no injected handler may execute');

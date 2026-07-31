@@ -85,7 +85,14 @@ check('CROSS-WORKSPACE WRITE IS IMPOSSIBLE: update/remove with the wrong workspa
   assert.strictEqual(records.goals.getForWorkspace(wsA.id, goalA.id).title, 'Ten interviews');
 });
 
-check('records require an explicit workspaceId on every read path', () => {
+// Named for what it checks, not for what would be reassuring. It covers two
+// entry points on one record type; the guarantee that every scoped operation
+// keys on workspaceId is covered by the cross-workspace cases above, each of
+// which was proven to fail when the workspaceId term is removed from
+// getForWorkspace / updateForWorkspace / removeForWorkspace. An earlier name
+// claimed "every read path" while testing two of them — the same overclaim
+// pattern as R-008 and R-016.
+check('listForWorkspace and create reject a missing or empty workspaceId', () => {
   assert.throws(() => records.goals.listForWorkspace(''), /workspaceId/);
   assert.throws(() => records.goals.create(undefined, { title: 'x' }), /workspaceId/);
 });
