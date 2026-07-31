@@ -515,6 +515,7 @@
       <div class="fo-card">
         <p class="section-title">Founder profile</p>
         ${p ? `<div class="fo-profile">
+          ${profileRow('Name', p.displayName)}
           ${profileRow('Skills', (p.skills || []).join(', '))}
           ${profileRow('Industries', (p.industries || []).join(', '))}
           ${profileRow('Hours / week', p.hoursPerWeek)}
@@ -883,6 +884,7 @@
       case 'profile':
         return `<h3>About you</h3>
           <p class="fo-hint">All optional — you can fill this in later from Settings.</p>
+          ${field('displayName', 'What should the dashboard call you?', { placeholder: 'your name' })}
           ${field('skills', 'Skills (comma-separated)', { placeholder: 'sales, design' })}
           ${field('industries', 'Industries you understand', { placeholder: 'apparel, construction' })}
           ${field('hoursPerWeek', 'Hours per week', { type: 'number' })}
@@ -973,6 +975,7 @@
       const skills = q('[name="skills"]').value.trim();
       const industries = q('[name="industries"]').value.trim();
       wizard.draft.profile = {
+        displayName: q('[name="displayName"]').value.trim() || undefined,
         skills: skills ? skills.split(',').map((s) => s.trim()).filter(Boolean) : [],
         industries: industries ? industries.split(',').map((s) => s.trim()).filter(Boolean) : [],
         hoursPerWeek: q('[name="hoursPerWeek"]').value || undefined,

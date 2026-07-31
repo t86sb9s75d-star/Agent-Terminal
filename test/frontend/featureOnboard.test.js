@@ -449,6 +449,34 @@ async function run() {
     assert.notDeepStrictEqual(earlyRecs.sort(), lateRecs.sort(), 'recommendations must differ by stage');
   });
 
+  await check('[regression] the dashboard greeting comes from the profile, not a hardcoded name', async ({ page, base }) => {
+    // public/app.js shipped with `const OPERATOR_NAME = 'Brody'` — one
+    // person's name compiled into a tool meant to be run by whoever installs
+    // it. The greeting is now the operator's own, and absent until they say.
+    await page.goto(base, { waitUntil: 'networkidle' });
+    await page.waitForSelector('.fo-wizard');
+    await page.click('[data-wz="next"][data-next="profile"]');
+    await page.waitForSelector('.fo-wizard [name="displayName"]');
+    await page.fill('.fo-wizard [name="displayName"]', 'Ada');
+    await page.click('[data-wz="next"][data-next="operating_mode"]');
+    await page.click('[data-wz="next"][data-next="workspace"]');
+    await page.fill('.fo-wizard [name="name"]', 'Greeting Co');
+    await page.click('[data-wz="next"][data-next="agents"]');
+    await page.click('[data-wz="next"][data-next="permissions"]');
+    await page.click('[data-wz="next"][data-next="yc"]');
+    await page.click('[data-wz="next"][data-next="review"]');
+    await page.click('[data-wz="next"][data-next="done"]');
+    await page.waitForSelector('.fo-cc-name');
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.click('.rail-item[data-view="command"]');
+    await page.waitForSelector('.condition-headline');
+    const headline = await page.textContent('.condition-headline');
+    assert.ok(headline.includes('Ada'), `greeting must use the operator's own name, got: ${headline}`);
+    assert.ok(!/Brody/.test(await page.content()), 'no hardcoded operator name may remain in the served app');
+    assert.strictEqual((await api(base, '/api/profile')).body.displayName, 'Ada');
+  });
+
   await check('[regression] a workspace can be archived and unarchived from the interface', async ({ page, base }) => {
     // The selector already rendered "(archived)" while the only way to enter
     // or leave that state was curl — the operator could see a state they

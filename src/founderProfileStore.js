@@ -17,7 +17,10 @@ const SCHEMA_VERSION = 1;
 
 // Known profile fields. Unknown keys are ignored rather than stored, so the
 // shape stays predictable. All optional; strings and arrays only.
-const STRING_FIELDS = ['preferredRole', 'cofounderStatus', 'geographic', 'riskTolerance', 'revenuePreference', 'communicationPrefs', 'constraints'];
+// displayName is what the dashboard greets you by. It replaced a hardcoded
+// operator name in public/app.js — the greeting now comes from the operator's
+// own profile, and is simply omitted when they have not set one.
+const STRING_FIELDS = ['displayName', 'preferredRole', 'cofounderStatus', 'geographic', 'riskTolerance', 'revenuePreference', 'communicationPrefs', 'constraints'];
 const ARRAY_FIELDS = ['skills', 'industries', 'priorities', 'networkAdvantages'];
 const NUMBER_FIELDS = ['hoursPerWeek', 'availableCapital'];
 
