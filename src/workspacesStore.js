@@ -20,7 +20,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const { createVersionedStore } = require('./persistence/versionedStore');
-const { AppError, Codes, requireString } = require('./errors');
+const { AppError, Codes, requireString, optionalDate } = require('./errors');
 const { isValidStage, DEFAULT_STAGE } = require('./businessStages');
 
 const DATA_DIR = process.env.RUCKER_DATA_DIR || path.join(__dirname, '..', 'data');
@@ -85,16 +85,12 @@ function validateStage(stage, fallback) {
   return stage;
 }
 
-// targetDate is optional; when present it must be a parseable date string. We
-// store the original string (not a re-serialized Date) to avoid timezone
-// surprises, after confirming it parses.
+// targetDate uses the shared optional-date contract (errors.optionalDate) —
+// the same one goal.targetDate and assumption.reviewDate use. This used to be
+// a local implementation, which is how the record stores came to have no date
+// validation at all while this one did.
 function validateTargetDate(value, fallback) {
-  if (value === undefined) return fallback;
-  if (value === null || value === '') return null;
-  if (typeof value !== 'string' || Number.isNaN(Date.parse(value))) {
-    throw new AppError(Codes.VALIDATION_ERROR, 'targetDate must be a valid date string or null');
-  }
-  return value;
+  return optionalDate(value, 'targetDate', fallback);
 }
 
 function create(data) {

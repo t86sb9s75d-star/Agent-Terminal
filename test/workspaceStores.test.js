@@ -224,6 +224,69 @@ check('agent settings are workspace-scoped', () => {
   assert.strictEqual(agentSettings.listForWorkspace(wsB.id).length, 0);
 });
 
+// ---- R-007: ONE optional-date contract, applied everywhere (see errors.optionalDate)
+//
+// Before this, workspaces.targetDate was validated and goal.targetDate /
+// assumption.reviewDate were not — two contracts for one concept in one repo.
+// The loose half accepted objects, arrays and junk strings. These cases run
+// against every date-semantics field so a third one cannot quietly diverge.
+
+// Every (label, write) pair that accepts an optional date. Adding a new
+// date field without adding it here is the drift this list exists to catch.
+const DATE_FIELDS = [
+  ['workspace.targetDate', (v) => workspaces.update(wsA.id, { targetDate: v }), () => workspaces.get(wsA.id).targetDate],
+  ['goal.targetDate', (v) => records.goals.create(wsA.id, { title: 'dated', targetDate: v }), null],
+  ['assumption.reviewDate', (v) => records.assumptions.create(wsA.id, { statement: 'dated', reviewDate: v }), null],
+];
+
+check('every optional-date field rejects objects, arrays and malformed strings', () => {
+  // Non-strings must be rejected, not stringified. An object previously
+  // survived into storage and rendered to the operator as "[object Object]".
+  const rejected = [{ evil: true }, [1, 2, 3], 'not-a-date', '2026-13-45', 123, true];
+  for (const [label, write] of DATE_FIELDS) {
+    for (const bad of rejected) {
+      assert.throws(
+        () => write(bad),
+        (err) => err.code === 'VALIDATION_ERROR' && /must be/.test(err.message),
+        `${label} must reject ${JSON.stringify(bad)} with a stable VALIDATION_ERROR`
+      );
+    }
+  }
+});
+
+check('every optional-date field rejects ambiguous coercions Date.parse would accept', () => {
+  // Date.parse('garbage 2024') and Date.parse('5') both succeed. A bare
+  // Date.parse check is therefore not a date validator; the contract is an
+  // ISO calendar date (what <input type="date"> emits), optionally with time.
+  const ambiguous = ['garbage 2024', '5', '0', 'Jan 5 2026'];
+  for (const [label, write] of DATE_FIELDS) {
+    for (const bad of ambiguous) {
+      assert.throws(() => write(bad), /must be/, `${label} must reject the ambiguous value ${JSON.stringify(bad)}`);
+    }
+  }
+});
+
+check('every optional-date field accepts ISO dates and an explicit clear', () => {
+  for (const [label, write, read] of DATE_FIELDS) {
+    assert.doesNotThrow(() => write('2026-07-31'), `${label} must accept an ISO date`);
+    assert.doesNotThrow(() => write('2026-07-31T12:00:00Z'), `${label} must accept an ISO date-time`);
+    // null and '' are the two ways the API/UI express "clear this field".
+    assert.doesNotThrow(() => write(null), `${label} must accept null as a clear`);
+    assert.doesNotThrow(() => write(''), `${label} must accept '' as a clear`);
+    if (read) assert.strictEqual(read(), null, `${label} clears to null, not '' or undefined`);
+  }
+});
+
+check('a valid stored date survives an update that does not mention it', () => {
+  workspaces.update(wsA.id, { targetDate: '2026-07-31' });
+  workspaces.update(wsA.id, { name: 'Apparel Co renamed' });
+  assert.strictEqual(workspaces.get(wsA.id).targetDate, '2026-07-31');
+
+  const g = records.goals.create(wsA.id, { title: 'keeps its date', targetDate: '2026-01-15' });
+  const after = records.goals.updateForWorkspace(wsA.id, g.id, { status: 'in_progress' });
+  assert.strictEqual(after.targetDate, '2026-01-15');
+});
+
 // cleanup
 try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch { /* ignore */ }
 

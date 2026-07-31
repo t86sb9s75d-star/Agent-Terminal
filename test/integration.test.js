@@ -993,6 +993,43 @@ async function run() {
     }
   });
 
+  // R-007 — one optional-date contract, enforced at the HTTP boundary too.
+  // The store-level cases live in test/workspaceStores.test.js; this proves
+  // the API returns a stable VALIDATION_ERROR rather than a 500 or a silent
+  // accept, for every endpoint that takes an operator-supplied date.
+  await check('every optional-date API field rejects objects, arrays and junk with VALIDATION_ERROR', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const ws = (await json(await post(server.baseUrl, '/api/workspaces', { name: 'Dates' }))).body;
+
+      const cases = [
+        ['workspace targetDate', (v) => post(server.baseUrl, '/api/workspaces', { name: 'W', targetDate: v })],
+        ['goal targetDate', (v) => post(server.baseUrl, `/api/workspaces/${ws.id}/goals`, { title: 'G', targetDate: v })],
+        ['assumption reviewDate', (v) => post(server.baseUrl, `/api/workspaces/${ws.id}/assumptions`, { statement: 'A', reviewDate: v })],
+      ];
+      // {} and [] previously reached storage verbatim on the record routes and
+      // rendered to the operator as "[object Object]".
+      for (const [label, send] of cases) {
+        for (const bad of [{ evil: true }, [1, 2], 'not-a-date', 'garbage 2024', 42]) {
+          const res = await json(await send(bad));
+          assert.strictEqual(res.status, 400, `${label} must 400 on ${JSON.stringify(bad)}, got ${res.status}`);
+          assert.strictEqual(res.body.code, 'VALIDATION_ERROR', `${label} must use the stable error code`);
+          assert.ok(res.body.requestId, `${label} error must keep the standard error shape`);
+        }
+        // the good path still works, and '' still clears
+        const ok = await json(await send('2026-07-31'));
+        assert.strictEqual(ok.status, 201, `${label} must accept an ISO date`);
+        const cleared = await json(await send(''));
+        assert.strictEqual(cleared.status, 201, `${label} must accept '' as a clear`);
+      }
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   await check('every Feature Onboard store is registered for operator recovery', async () => {
     // A newly added store that the recovery endpoint does not know about is a
     // real gap: it would be the one store an operator could not repair after

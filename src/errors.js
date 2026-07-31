@@ -46,4 +46,36 @@ function optionalString(value, fieldName) {
   return value;
 }
 
-module.exports = { AppError, Codes, requireString, optionalString };
+// The ONE contract for every optional operator-supplied date in the system
+// (workspace targetDate, goal targetDate, assumption reviewDate). It lives
+// here beside requireString/optionalString because having two date contracts
+// in one repository is exactly how goal.targetDate ended up accepting objects
+// while workspace.targetDate rejected them.
+//
+// Deliberately stricter than a bare Date.parse() check. Date.parse accepts
+// 'garbage 2024', '5' and '0' — so `!Number.isNaN(Date.parse(v))` is not a
+// date validator, it is a "contains something date-ish" validator. The
+// contract here is an ISO-8601 calendar date (exactly what <input type="date">
+// emits), optionally followed by a time component, and it must also be a real
+// calendar date — the shape check alone would let 2026-02-31 through.
+//
+//   undefined  -> `fallback` (field omitted: keep whatever is already stored)
+//   null | ''  -> null       (the two ways the API/UI say "clear this")
+//   ISO string -> the original string, stored verbatim so no timezone
+//                 re-serialization surprise is introduced
+//   anything else -> AppError(VALIDATION_ERROR), never a raw TypeError
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}([T ][\d:.]+(Z|[+-]\d{2}:?\d{2})?)?$/;
+
+function optionalDate(value, fieldName, fallback = null) {
+  if (value === undefined) return fallback;
+  if (value === null || value === '') return null;
+  if (typeof value !== 'string' || !ISO_DATE.test(value) || Number.isNaN(Date.parse(value))) {
+    throw new AppError(
+      Codes.VALIDATION_ERROR,
+      `${fieldName} must be an ISO date (YYYY-MM-DD), an ISO date-time, or null to clear it`
+    );
+  }
+  return value;
+}
+
+module.exports = { AppError, Codes, requireString, optionalString, optionalDate };

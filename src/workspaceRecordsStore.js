@@ -21,7 +21,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const { createVersionedStore } = require('./persistence/versionedStore');
-const { AppError, Codes, requireString } = require('./errors');
+const { AppError, Codes, requireString, optionalDate } = require('./errors');
 const workspacesStore = require('./workspacesStore');
 
 const DATA_DIR = process.env.RUCKER_DATA_DIR || path.join(__dirname, '..', 'data');
@@ -80,7 +80,7 @@ function validateGoal(data, existing) {
   return {
     title: requiredField(data, existing, 'title', 'title'),
     description: data.description !== undefined ? String(data.description) : (existing?.description ?? ''),
-    targetDate: data.targetDate !== undefined ? (data.targetDate || null) : (existing?.targetDate ?? null),
+    targetDate: optionalDate(data.targetDate, 'targetDate', existing?.targetDate ?? null),
     status: data.status !== undefined ? assertEnum(data.status, GOAL_STATUSES, 'status') : (existing?.status ?? 'not_started'),
     successCriteria: data.successCriteria !== undefined ? String(data.successCriteria) : (existing?.successCriteria ?? ''),
     milestones: data.milestones !== undefined ? validateMilestones(data.milestones) : (existing?.milestones ?? []),
@@ -154,7 +154,7 @@ function validateAssumption(data, existing) {
     plannedTest: data.plannedTest !== undefined ? String(data.plannedTest) : (existing?.plannedTest ?? ''),
     impact: data.impact !== undefined ? String(data.impact) : (existing?.impact ?? ''),
     owner: data.owner !== undefined ? String(data.owner) : (existing?.owner ?? ''),                       // handoff §6.7
-    reviewDate: data.reviewDate !== undefined ? (data.reviewDate || null) : (existing?.reviewDate ?? null), // handoff §6.7
+    reviewDate: optionalDate(data.reviewDate, 'reviewDate', existing?.reviewDate ?? null), // handoff §6.7
     relatedGoalId: data.relatedGoalId !== undefined ? (data.relatedGoalId || null) : (existing?.relatedGoalId ?? null),
   };
 }
