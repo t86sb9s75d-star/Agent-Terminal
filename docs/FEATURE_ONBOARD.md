@@ -4,8 +4,10 @@ The operating layer above individual agents: business workspaces, a founder
 command center, goals/decisions/assumptions/evidence, an agent catalog, and a
 YC preparation checklist — plus the first-run onboarding flow that sets them up.
 
-This document describes what is actually implemented and enforced. Where
-something is stored but not enforced, it says so explicitly.
+This document describes what is actually implemented. Where something is
+recorded but not enforced, it says so explicitly — and for agent permissions,
+that turned out to be all thirteen capabilities. See "Permissions — what the
+toggles actually do" below.
 
 ## Product scope — read this first
 
@@ -116,38 +118,76 @@ must never present it as one.** There is currently no AI-generated YC
 commentary; if one is added it must be stored and displayed separately and must
 not be able to move the checklist number.
 
-## Permissions — stored vs enforced
+## Permissions — what the toggles actually do
 
-This is the most important honesty boundary in the feature.
+This is the most important honesty boundary in the feature, and an earlier
+version of this document got it wrong in a way worth stating plainly.
 
-Defaults follow least authority: **every consequential capability is off by
-default** and must be explicitly granted per workspace.
+**No permission value stored on this screen is consulted by the runtime.
+Not one of the thirteen.** Turning any of them off changes what is recorded
+and nothing else. This was established by reading every call site, not by
+trusting the labels.
 
-| Capability | Default | Status | Enforcement point |
+An earlier version of this table split the thirteen into "stored preference"
+and "enforced", listing an enforcement point for three. That was misleading.
+Three capabilities do have a **related system-level control**, but those
+controls run unconditionally and never read these values:
+
+- `budget.assertWithinBudget()` is called before every run
+  (`src/agentManager.js`) and checks the configured daily caps. It does not
+  look at `spend_money` or `paid_model_calls` for this agent or workspace.
+- `src/workers/custom.js` applies its trusted-operator boundary and
+  `minimalEnv()` to every custom run. It does not look at
+  `use_custom_provider`.
+
+So the honest statement is: **a system control exists for three actions; the
+per-agent toggle gates nothing, for any of the thirteen.**
+
+`src/permissions.js` is the single authority for this, and the UI and this
+table both read from it rather than restating it:
+
+| Capability | Default | Classification | Related always-on control |
 |---|---|---|---|
-| `read_workspace_data` | on | stored preference | — |
-| `write_workspace_data` | on | stored preference | — |
-| `create_tasks` | on | stored preference | — |
-| `modify_tasks` | on | stored preference | — |
-| `read_files` | on | stored preference | — |
-| `edit_files` | **off** | stored preference | — |
-| `run_commands` | **off** | stored preference | — |
-| `use_custom_provider` | **off** | **enforced** | `workers/custom.js` trust boundary + minimal env |
-| `access_network` | **off** | stored preference | — |
-| `contact_people` | **off** | stored preference | — |
-| `spend_money` | **off** | **enforced** | `budget.js` daily caps, checked before a paid run starts |
-| `paid_model_calls` | **off** | **enforced** | `budget.js` daily caps |
-| `act_without_approval` | **off** | stored preference | — |
+| `read_workspace_data` | on | recorded only | — |
+| `write_workspace_data` | on | recorded only | — |
+| `create_tasks` | on | recorded only | — |
+| `modify_tasks` | on | recorded only | — |
+| `read_files` | on | recorded only | — |
+| `edit_files` | **off** | recorded only | — |
+| `run_commands` | **off** | recorded only | — |
+| `use_custom_provider` | **off** | system control | `src/workers/custom.js` — trusted-operator boundary + `minimalEnv()`, on every custom run |
+| `access_network` | **off** | recorded only | — |
+| `contact_people` | **off** | recorded only | — |
+| `spend_money` | **off** | system control | `src/budget.js` — daily caps, before every paid run |
+| `paid_model_calls` | **off** | system control | `src/budget.js` — daily caps, before every paid run |
+| `act_without_approval` | **off** | recorded only | — |
 
-**"Stored preference" means exactly that**: the value is recorded, displayed,
-and available to a future enforcement layer. Nothing consults it yet. The
-interface must not describe these as *blocked* or *protected*, and this document
-will not either.
+Defaults follow least authority: every consequential capability starts off.
+That is a defensible default for a value that will one day be enforced — it is
+not itself a control.
 
-The three enforced capabilities are enforced by pre-existing mechanisms
-(spending caps and the custom-provider boundary), not by new Feature Onboard
-code. Known limitation: budget enforcement is a **lower bound** — see
-`src/budget.js` and Known limitations below.
+**There is no approval workflow anywhere in this system.** Nothing pauses to
+ask the operator before an agent acts. A `requiresApproval()` helper used to
+exist in `src/permissions.js`; it had no caller outside its own test and named
+a mechanism that does not exist, so it was removed rather than renamed.
+
+The interface must not describe any of these as *blocked*, *protected*,
+*prevented*, *disabled*, *enforced*, *approval-gated* or *guaranteed*, and this
+document will not either. That rule is enforced by a browser contract test
+(`[contract] no permission surface claims enforcement or approval it does not
+have`) which forbids claims rather than vocabulary — "not enforced" and
+"nothing in the runtime reads this value" remain sayable, because they are true.
+
+### Where to review them
+
+Business → Agents → **Review permissions** on any agent lists all thirteen with
+their classification, the code path behind each system control, and the stored
+value, and lets you change any of them. The onboarding permissions step shows
+the same list read-only. Both render `src/permissions.js`'s own summary
+sentence verbatim so the UI and this document cannot drift apart.
+
+Known limitation: the budget control is a **lower bound** — see `src/budget.js`
+and Known limitations below.
 
 ## Persistence
 
@@ -242,10 +282,10 @@ removed, or if a route claimed to be operator-reachable has no call site in
 
 | Layer | Command | Count |
 |---|---|---|
-| Unit | `npm run test:unit` | 86 |
-| Integration (real HTTP, real server) | `npm run test:integration` | 32 |
-| Frontend (real Chromium) | `npm run test:frontend` | 29 |
-| Everything | `npm run test:all` | **147** |
+| Unit | `npm run test:unit` | 97 |
+| Integration (real HTTP, real server) | `npm run test:integration` | 35 |
+| Frontend (real Chromium) | `npm run test:frontend` | 39 |
+| Everything | `npm run test:all` | **171** |
 
 CI (`.github/workflows/ci.yml`) runs all three plus a syntax check, `npm audit`,
 and a working-tree-clean gate, on pull requests and pushes to `main` and
@@ -259,32 +299,48 @@ Browser coverage is **Chromium only**. Firefox and WebKit are not tested.
 
 Named rather than hidden. These are accepted, not oversights:
 
-1. **Most permissions are stored preferences, not enforcement** (table above).
-   Only `spend_money`, `paid_model_calls`, and `use_custom_provider` have a real
-   enforcement point today.
+1. **No permission value is enforced — zero of thirteen** (table above). Three
+   capabilities have a related always-on system control that does not read the
+   setting. There is also no approval workflow anywhere in the system.
 2. **Workspace separation is organizational, not security isolation.** Single
    trusted operator; no authentication exists.
-3. **Budget enforcement is a lower bound.** A model genuinely absent from the
+3. **A corrupt goals store makes the whole workspace list unavailable.**
+   `GET /api/workspaces` computes progress from that store, so a
+   `STORE_DEGRADED` there returns 503 for the list rather than degrading
+   progress alone. The UI now renders this as an explicit error (it previously
+   rendered "No workspaces yet", which was worse than blank), and the operator
+   can still recover the store through the Security view. Returning workspaces
+   with progress marked unavailable would need a new progress state, which is a
+   product decision rather than a bug fix.
+4. **Sentinel findings still accumulate one per request per tampered store.**
+   The per-request amplification is fixed (one read, one event — see
+   `docs/ENGINEERING_FINDINGS.md` R-006), but `evaluateIntegrityEvent()` has no
+   dedupe by `(store, reason)` and `security_events.json` has no retention cap,
+   so repeated page loads against a store the operator has not yet recovered
+   keep adding findings. Pre-existing behaviour; capping it is a retention
+   decision, not a defect fix.
+5. **Two routes have no operator interface**, listed above with reasons.
+6. **Budget enforcement is a lower bound.** A model genuinely absent from the
    pricing table still yields `costUsd: null` and stays outside `knownCost`.
-4. **Real paid-call accounting is not verified end-to-end** — doing so would
+7. **Real paid-call accounting is not verified end-to-end** — doing so would
    require real spend or SDK mocking, neither done.
-5. **Pricing-table drift is unguarded.** Rates in `src/pricing.js` are
+8. **Pricing-table drift is unguarded.** Rates in `src/pricing.js` are
    hand-maintained; a published price change goes stale silently.
-6. **`maxTokens` default (`|| 1024`) is duplicated** in both provider workers.
+9. **`maxTokens` default (`|| 1024`) is duplicated** in both provider workers.
    Same shape as the effective-model defect, but it affects no accounting.
-7. **Historical runs are not backfilled.** Runs recorded before the
+10. **Historical runs are not backfilled.** Runs recorded before the
    effective-model fix keep `model: null`.
-8. **Record deletion is a hard delete** (audit-logged, but the record is gone).
-9. **Single-process only.** Every store assumes one process owns the data
+11. **Record deletion is a hard delete** (audit-logged, but the record is gone).
+12. **Single-process only.** Every store assumes one process owns the data
    directory (`instanceLock.js`). No multi-process or multi-instance safety is
    claimed.
-10. **`public/app.js` (the pre-Feature-Onboard UI) still has unhardened
+13. **`public/app.js` (the pre-Feature-Onboard UI) still has unhardened
     interpolation sites** in the Security/Sentinel view. Feature Onboard's own
     UI (`public/onboard.js`) escapes every operator-controlled value, but the
     legacy file was deliberately not rewritten in this work.
-11. **Optional `workstreamId` references are not existence-checked.** A record
+14. **Optional `workstreamId` references are not existence-checked.** A record
     may point at a workstream that was later removed; this is preferred over
     letting an unrelated deletion invalidate a record.
-12. **No accessibility audit by a real screen reader.** Semantics are asserted
+15. **No accessibility audit by a real screen reader.** Semantics are asserted
     programmatically (roles, `aria-valuetext`, focus, Escape), which is not the
     same as verified assistive-technology behavior.

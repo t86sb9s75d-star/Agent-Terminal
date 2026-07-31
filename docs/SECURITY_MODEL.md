@@ -182,18 +182,30 @@ distinction matters:
   person's data. Multi-user use would require authentication, authorization,
   and a re-examination of the `custom` provider (below) — none of which exist.
 
-### Feature Onboard permissions are mostly recorded preferences
+### Feature Onboard permissions are recorded, not enforced
 
-The workspace agent-settings UI presents a permission list (spend money, run
-commands, contact people, act without approval, and so on) with least-authority
-defaults — every consequential capability is off unless explicitly granted.
+Business → Agents → Review permissions lists all thirteen capabilities (spend
+money, run commands, contact people, act without approval, and so on) with
+least-authority defaults — every consequential capability is off unless
+explicitly granted.
 
-**Only three of those have an enforcement point today**: `spend_money` and
-`paid_model_calls` (enforced by the daily caps in `src/budget.js`, checked
-before a paid run starts) and `use_custom_provider` (the documented
-custom-provider trust boundary plus `minimalEnv()`). The remainder are stored
-and displayed, and are available to a future enforcement layer, but **nothing
-consults them yet**.
+**No stored value on that screen is consulted by the runtime.** All thirteen
+are recorded and displayed only. This is stronger than the earlier claim in
+this document, which said three were "enforced"; that was checked against every
+call site and found to be misleading:
+
+- `budget.assertWithinBudget()` runs before every run and reads the configured
+  daily caps. It never reads `spend_money` or `paid_model_calls` for this agent
+  or workspace.
+- `src/workers/custom.js` applies its trusted-operator boundary and
+  `minimalEnv()` to every custom run. It never reads `use_custom_provider`.
+
+Those two controls are real and do constrain the system — they are simply
+**not gated on these settings**. So three actions have an always-on system
+control, and zero of the thirteen toggles gate anything.
+
+There is also **no approval workflow** anywhere in this system. Nothing pauses
+to ask the operator before an agent acts, and no surface may imply otherwise.
 
 This is why neither the interface nor `docs/FEATURE_ONBOARD.md` describes those
 permissions as "blocked" or "protected". Granting or denying them changes what
