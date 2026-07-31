@@ -285,14 +285,10 @@ function createRecordStore({ type, fileName, storeName, validate }) {
   // loop instead re-reads and re-integrity-checks the file once per
   // workspace, which turns one tamper event into N (R-006).
   //
-  // This is NOT a scoping hole: it returns records that still carry their own
-  // workspaceId, and no request handler may hand its output to the operator
-  // without grouping by that field first. Every operator-facing read path
+  // This is NOT a scoping hole: the records carry their own workspaceId and
+  // the only caller groups by it immediately. Every operator-facing read path
   // still goes through listForWorkspace/getForWorkspace.
-  function listAll() {
-    return readAll();
-  }
-
+  //
   // Group every record by workspaceId in one pass, so a caller that needs
   // all workspaces reads the file exactly once. Returns a plain object with
   // a null prototype so a workspace id like "__proto__" cannot collide with
@@ -342,7 +338,7 @@ function createRecordStore({ type, fileName, storeName, validate }) {
 
   function recover(resolution) { return store().recover(resolution); }
 
-  return { type, init, create, listForWorkspace, listAll, groupByWorkspace, getForWorkspace, updateForWorkspace, removeForWorkspace, recover };
+  return { type, init, create, listForWorkspace, groupByWorkspace, getForWorkspace, updateForWorkspace, removeForWorkspace, recover };
 }
 
 // The six workspace-owned record stores.

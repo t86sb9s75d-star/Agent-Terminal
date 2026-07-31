@@ -170,6 +170,19 @@ together, so a record filed under one workspace is not reachable through
 another — verified at the store level, over HTTP, and in the rendered UI, each
 with a test proven to fail when the scoping is removed.
 
+The UI-level half of that claim needed correcting once and is worth stating
+precisely, because it is the layer the operator actually sees. Scoping is
+enforced in the stores and over HTTP; the UI additionally has to avoid
+*displaying* the wrong workspace's data, which is a different problem and was
+briefly broken. A slow load for a workspace the operator had already navigated
+away from resolved later and overwrote the current one, so the selector read
+one workspace while the panel rendered another's records. Fixed with a
+monotonic load token in `loadActiveWorkspaceDetail()` and covered by a
+regression case that forces the race deterministically by delaying one
+workspace's fetch. What is verified is therefore: the stores and API never
+*return* another workspace's records, and the UI never *renders* them,
+including under a raced load.
+
 That property is **organizational separation, not tenant isolation**, and the
 distinction matters:
 

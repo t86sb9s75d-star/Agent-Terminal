@@ -45,6 +45,12 @@ Severity is about consequence to the operator, not effort to fix.
 | R-014 | this pass | Low | observability | documented | Sentinel findings still grow one per request per tampered store |
 | R-015 | this pass | Medium | data contract | fixed | my own date validator accepted 2026-02-31 while claiming to reject it |
 | R-016 | this pass | Low | test quality | fixed | my own route contract passed a route with no affordance |
+| A-001 | hostile review | High | isolation / state desync | fixed | a superseded load painted another workspace's records over the current one |
+| A-002 | hostile review | High | lost update | deferred | concurrent permission edits silently revert each other |
+| A-003 | hostile review | High | broken recovery | documented | `corrupt_no_backup` cannot be repaired through the product |
+| A-004 | hostile review | Medium | API contract | documented | oversized request body returns 500, not a documented error |
+| A-005 | hostile review | Low | dead code | fixed | added a dead export in the same branch that removed one |
+| A-006 | hostile review | Low | performance | documented | O(n*m) rendering in the two new tabs |
 
 ---
 
@@ -620,6 +626,125 @@ Severity is about consequence to the operator, not effort to fix.
   R-013). The common thread is that writing the test is not the check —
   running the mutation is.
 
+## A-001 — A superseded load painted another workspace's records over the current one
+
+- **Phase**: hostile review · **Severity**: High · **Category**: workspace isolation / state desynchronization · **Status**: fixed
+- **Files**: `public/onboard.js` (`loadActiveWorkspaceDetail`)
+- **Symptom**: with one workspace's fetch delayed, selecting A then immediately
+  B left the selector reading **Beta** while the panel rendered **Alpha's**
+  records.
+- **Reproduction**: delay `GET /api/workspaces/<A>/goals` by 1500ms; select A,
+  wait 100ms, select B, wait for A's load to land. Confirmed:
+  `selectorSays: Beta, panelShowsAlpha: true, panelShowsBeta: false`.
+- **Root cause**: `loadActiveWorkspaceDetail()` captured the workspace id at
+  entry but assigned to shared state **unconditionally** on resolve. No
+  generation token, no cancellation. A slower earlier load overwrote a faster
+  later one, and the losing path did not re-render the selector.
+- **Why the tests missed it**: every isolation case waits for the correct data
+  before asserting, so a late-landing stale load is unobservable by
+  construction. Replacing sleeps with condition waits in an earlier commit made
+  this blind spot *worse* — a sleep at least sampled an arbitrary moment.
+- **Fix**: a monotonic `detailLoadToken`; on resolve, discard if a newer load
+  started or the active workspace changed. The `catch` branch is guarded too,
+  so a slow 503 for an abandoned workspace cannot blank the current one.
+- **Fail-without proof**: the new regression case fails against the pre-fix code
+  with "a superseded load must never paint another workspace's records over the
+  current one".
+- **Same-pattern search**: the YC PUT handler assigns `state.yc` directly on a
+  single mutation — same class, much narrower window, not currently reachable
+  as a cross-workspace leak. Noted, not fixed.
+- **Generalizes**: yes — shared mutable state plus unsequenced async loads. The
+  client has no concurrency model at all, which is the real gap.
+
+## A-002 — Concurrent permission edits silently revert each other
+
+- **Phase**: hostile review · **Severity**: High · **Category**: lost update · **Status**: **deferred by decision** (superseded by Phase 9)
+- **Files**: `public/onboard.js` (permission change handler), `src/workspaceAgentSettingsStore.js`
+- **Reproduction** (agents refetch delayed 900ms, two clicks 120ms apart):
+  ```
+  PUT #1 {... edit_files:TRUE,  run_commands:false ...}
+  PUT #2 {... edit_files:FALSE, run_commands:TRUE  ...}   <- reverted #1
+  final: edit_files=false, run_commands=true
+  ```
+  A second run with different timing lost **both** grants. Nondeterministic.
+  The UI then agrees with the wrong result, so no error is visible.
+- **Root cause**: introduced by the R-013 fix. Sending the whole resolved map
+  avoids the store's default-refill, and creates a read-modify-write race
+  because `next` is computed from client state that refreshes only after the
+  handler's own `await`. The API shares the flaw: two concurrent PUTs with
+  disjoint maps are last-write-wins. Full replace, no merge, no version.
+- **Dangerous direction**: a *revocation* is undone the same way.
+- **Why the tests missed it**: the permission test clicks, waits for
+  completion, then clicks again — written that way specifically to defeat the
+  partial-post mutation, which guaranteed it could never exercise concurrency.
+- **Why not fixed**: Phase 9 replaces this model with capability grants as
+  versioned transactions (previous version, requested version, reviewer,
+  timestamp, audit entry), which removes the race by construction. Patching the
+  checkbox path would be discarded work. Deferred deliberately, with the
+  consequence stated in Known Limitations rather than left implicit.
+- **When it is fixed**, the regression test is: two toggles without awaiting the
+  first, assert both land; plus a store test that a partial upsert preserves
+  unmentioned keys of an existing row.
+
+## A-003 — A `corrupt_no_backup` store cannot be repaired through the product
+
+- **Phase**: hostile review · **Severity**: High · **Category**: broken recovery · **Status**: documented (pre-existing)
+- **Files**: `src/persistence/versionedStore.js`, `src/server.js` (`sendError`)
+- **Reproduction**: corrupt a store, delete its backups, restart.
+  ```
+  degraded: reason "corrupt_no_backup"
+  restore_backup -> 500 INTERNAL_ERROR
+  accept_current -> 500 INTERNAL_ERROR
+  still degraded
+  ```
+- **Root cause**: `restore_backup` throws a plain `Error` when no valid backup
+  exists; `accept_current` calls `JSON.parse` on the malformed content without a
+  guard. `sendError` maps `entity.parse.failed` but nothing else, so both become
+  an opaque 500. The Security view exposes both as buttons.
+- **Second defect, same path**: `accept_current` performs no shape validation —
+  `{"schemaVersion":1,"records":"not-an-array"}` returns 200 and is recorded as
+  the new known-good baseline.
+- **Why the tests missed it**: the existing `accept_current` case tampers a
+  store while keeping it valid JSON. The Feature Onboard recovery test calls
+  `restore_backup` on **healthy** stores and asserts 200 — it verifies routing
+  while its name implies repair. My own new browser case *creates* this exact
+  state and asserts the UI errors, then never attempts recovery.
+- **Recommended fix**: `AppError(STORE_DEGRADED, …, 409)` instead of a bare
+  `Error`; wrap the parse and validate with `isValidEnvelope` before blessing;
+  add `entity.too.large` and a generic non-`AppError` mapping to `sendError`.
+- **Why not fixed now**: pre-existing, edge case (corrupt *and* no valid
+  backup), and the bytes are preserved on disk and repairable by hand. Accepted
+  for an internal single-operator release with the claim corrected.
+
+## A-004 — Oversized request bodies return 500 instead of a documented error
+
+- **Phase**: hostile review · **Severity**: Medium · **Category**: API contract · **Status**: documented (pre-existing)
+- **Files**: `src/server.js` (`express.json()`, `sendError`)
+- **Reproduction**: a 2MB `description`, or 5000 milestones → `500
+  INTERNAL_ERROR`. Default 100kb limit → `entity.too.large` → unmapped.
+- **Note**: `sendError` special-cases `entity.parse.failed` immediately above,
+  which makes the omission conspicuous. `src/errors.js` opens by stating every
+  user-facing error is a stable code. Record string fields also have no length
+  bound.
+- **Fix**: one line in `sendError`, an explicit `express.json({ limit })`, and a
+  field length cap.
+
+## A-005 — A dead export was added in the branch that removed one
+
+- **Phase**: hostile review · **Severity**: Low · **Category**: dead code · **Status**: fixed
+- **File**: `src/workspaceRecordsStore.js`
+- `listAll()` had zero callers anywhere; only `groupByWorkspace()` is used. R-012
+  in this same file removed a dead export and drew the lesson that they hide
+  until they break the build — and then this branch added another, with a
+  comment justifying a use case that did not exist. Removed.
+
+## A-006 — O(n*m) rendering in the two new tabs
+
+- **Phase**: hostile review · **Severity**: Low · **Category**: performance · **Status**: documented
+- **File**: `public/onboard.js` — `goals.find()` per task, `assumptions.find()`
+  per experiment, i.e. `find()` inside `map()`, re-run on every re-render.
+  Irrelevant at realistic counts. Fix is a `Map` built once per render.
+
 ---
 
 ## Patterns that recur across these findings
@@ -639,3 +764,10 @@ Stated once here rather than repeated in every entry.
 7. **Correct components can compose into an incorrect system.** R-006 — both
    halves were individually right.
 8. **A verification's own environment needs verifying.** F-008.
+9. **A test suite that is entirely sequential cannot observe a race.** A-001
+   and A-002 both required deliberately induced concurrency. Every layer here
+   is sequential, and making the browser suite *more* deterministic made it
+   *less* able to see these. This is the largest known gap in the strategy.
+10. **Fixing one defect can create another of a different family.** A-002 was
+   introduced by the fix for R-013. The correct move was not a better patch but
+   a different contract — which is what Phase 9 supplies.

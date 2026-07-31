@@ -89,8 +89,19 @@
     if (!state.activeWorkspaceId && state.workspaces.length) state.activeWorkspaceId = state.workspaces[0].id;
     if (state.activeWorkspaceId && !activeWorkspace()) state.activeWorkspaceId = state.workspaces[0]?.id || null;
   }
+  // Monotonic token for workspace-detail loads. Without it, a slow load for a
+  // workspace the operator has already navigated away from resolves later and
+  // overwrites the current one — the selector reads Beta while the panel shows
+  // Alpha's records. Eight parallel fetches per load makes that window wide,
+  // and every reload path (workspace switch, permission toggle, status change,
+  // record edit) goes through here. Capture on entry, discard on resolve if a
+  // newer load has started or the operator has moved on.
+  let detailLoadToken = 0;
+
   async function loadActiveWorkspaceDetail() {
     const id = state.activeWorkspaceId;
+    const token = ++detailLoadToken;
+    const superseded = () => token !== detailLoadToken || state.activeWorkspaceId !== id;
     state.loadError = null;
     if (!id) { state.records = {}; state.yc = null; state.agents = { agents: [], recommended: [] }; return; }
     try {
@@ -104,10 +115,15 @@
         api(`/api/workspaces/${id}/yc`),
         api(`/api/workspaces/${id}/agents`),
       ]);
+      if (superseded()) return; // a newer load owns the state now
       state.records = { goals, tasks, decisions, assumptions, experiments, evidence };
       state.yc = yc;
       state.agents = agents;
     } catch (err) {
+      // A superseded load must not report its failure either — otherwise a
+      // slow 503 for an abandoned workspace blanks the workspace the operator
+      // is actually looking at.
+      if (superseded()) return;
       // A failed load must SAY so. Leaving the panel blank makes a degraded
       // store (503 STORE_DEGRADED) look identical to "you have no records
       // yet" — the operator would read a real integrity problem as an empty

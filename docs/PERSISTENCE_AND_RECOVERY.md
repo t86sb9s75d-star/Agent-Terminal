@@ -139,6 +139,37 @@ third option:
   after reviewing the diff and confirming the change was intentional
   (e.g., a deliberate manual edit, or a migration you ran by hand).
 
+> **Known limitation — both actions currently fail for `corrupt_no_backup`.**
+> This paragraph previously implied recovery works for either degraded state.
+> It does not. Verified against a running server with a store corrupted and its
+> backups removed:
+>
+> ```
+> degraded: [{"subsystem":"workspace_goals","reason":"corrupt_no_backup", ...}]
+> POST .../recover {"resolution":"restore_backup"} -> 500 INTERNAL_ERROR
+> POST .../recover {"resolution":"accept_current"} -> 500 INTERNAL_ERROR
+> store remains degraded
+> ```
+>
+> `restore_backup` throws a plain `Error` (not an `AppError`) when no valid
+> backup exists, and `accept_current` calls `JSON.parse` on the malformed
+> content without a guard; neither is mapped by `sendError`, so both surface as
+> an opaque 500. The Security view exposes both as buttons, so an operator in
+> this state has no working repair path through the product and no useful
+> message. The corrupt bytes are still preserved as
+> `<file>.corrupt-<timestamp>` and can be repaired by hand.
+>
+> A second defect in the same path: `accept_current` performs **no shape
+> validation**. Given valid JSON of the wrong shape
+> (`{"schemaVersion":1,"records":"not-an-array"}`) it returns 200 and records
+> that hash as the new known-good baseline.
+>
+> Recovery from `tampered` — the common case, where the file is still valid
+> JSON — works and is covered by `test/integration.test.js`. Recovery from
+> `corrupt_no_backup` is **not** covered by any test, which is why this went
+> unnoticed: the existing case tampers a store while keeping it parseable.
+> Tracked as A-003 in `docs/ENGINEERING_FINDINGS.md`.
+
 Exposed via `POST /api/security/stores/:storeName/recover` (body:
 `{"resolution": "restore_backup" | "accept_current"}`) and, more
 usably, via the Security view's degraded-store banner, which shows the

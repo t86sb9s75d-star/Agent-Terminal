@@ -285,8 +285,8 @@ removed, or if a route claimed to be operator-reachable has no call site in
 |---|---|---|
 | Unit | `npm run test:unit` | 97 |
 | Integration (real HTTP, real server) | `npm run test:integration` | 35 |
-| Frontend (real Chromium) | `npm run test:frontend` | 39 |
-| Everything | `npm run test:all` | **171** |
+| Frontend (real Chromium) | `npm run test:frontend` | 40 |
+| Everything | `npm run test:all` | **172** |
 
 CI (`.github/workflows/ci.yml`) runs all three plus a syntax check, `npm audit`,
 and a working-tree-clean gate, on pull requests and pushes to `main` and
@@ -321,27 +321,61 @@ Named rather than hidden. These are accepted, not oversights:
    keep adding findings. Pre-existing behaviour; capping it is a retention
    decision, not a defect fix.
 5. **Two routes have no operator interface**, listed above with reasons.
-6. **Budget enforcement is a lower bound.** A model genuinely absent from the
+6. **Concurrent permission edits silently revert each other.** The permission
+   grid is checkbox state: each toggle PUTs the whole resolved capability map,
+   computed from client state that has not yet refreshed. Two toggles in quick
+   succession make the second write the first's stale value back — a grant or a
+   revocation disappears with no error, and the UI then agrees with the wrong
+   result. Reproduced with two clicks 120ms apart; the outcome is
+   nondeterministic. The API has the same problem independently: two concurrent
+   PUTs with disjoint maps are last-write-wins, because the contract is full
+   replace with no merge and no version.
+   **Deliberately not fixed here.** Phase 9 replaces this model with capability
+   grants as versioned transactions (previous version, requested version,
+   reviewer, timestamp, audit entry), which removes the race by construction.
+   Patching the checkbox path first would be discarded work. Tracked as A-002.
+7. **A `corrupt_no_backup` store cannot be repaired through the product.** Both
+   recovery actions return an opaque 500. See `docs/PERSISTENCE_AND_RECOVERY.md`
+   for the reproduction and the two underlying defects (a plain `Error` that
+   `sendError` does not map, and an unguarded `JSON.parse`), plus the fact that
+   `accept_current` performs no shape validation on what it blesses. The
+   corrupt bytes are preserved on disk and repairable by hand. Tracked as A-003.
+8. **An oversized request body returns 500, not a documented error.** `express.json()`
+   runs with the default 100kb limit and `sendError` maps `entity.parse.failed`
+   but not `entity.too.large`, so a large payload surfaces as
+   `INTERNAL_ERROR` — contradicting `src/errors.js`'s stated rule that every
+   user-facing error is a stable code. Record string fields also have no length
+   bound at all. Tracked as A-004.
+9. **The two new tabs render in O(n*m).** Tasks resolve their goal name and
+   experiments their assumption text with a `find()` inside a `map()`.
+   Irrelevant at realistic record counts, quadratic at large ones. Tracked as
+   A-006.
+10. **No test exercises concurrent operator actions.** Every case in every layer
+   is sequential, so the suite is structurally unable to observe a race unless
+   one is forced explicitly. Two of the findings above were only found by
+   deliberately inducing concurrency. This is the largest known gap in the test
+   strategy, not an oversight in any single test.
+11. **Budget enforcement is a lower bound.** A model genuinely absent from the
    pricing table still yields `costUsd: null` and stays outside `knownCost`.
-7. **Real paid-call accounting is not verified end-to-end** — doing so would
+12. **Real paid-call accounting is not verified end-to-end** — doing so would
    require real spend or SDK mocking, neither done.
-8. **Pricing-table drift is unguarded.** Rates in `src/pricing.js` are
+13. **Pricing-table drift is unguarded.** Rates in `src/pricing.js` are
    hand-maintained; a published price change goes stale silently.
-9. **`maxTokens` default (`|| 1024`) is duplicated** in both provider workers.
+14. **`maxTokens` default (`|| 1024`) is duplicated** in both provider workers.
    Same shape as the effective-model defect, but it affects no accounting.
-10. **Historical runs are not backfilled.** Runs recorded before the
+15. **Historical runs are not backfilled.** Runs recorded before the
    effective-model fix keep `model: null`.
-11. **Record deletion is a hard delete** (audit-logged, but the record is gone).
-12. **Single-process only.** Every store assumes one process owns the data
+16. **Record deletion is a hard delete** (audit-logged, but the record is gone).
+17. **Single-process only.** Every store assumes one process owns the data
    directory (`instanceLock.js`). No multi-process or multi-instance safety is
    claimed.
-13. **`public/app.js` (the pre-Feature-Onboard UI) still has unhardened
+18. **`public/app.js` (the pre-Feature-Onboard UI) still has unhardened
     interpolation sites** in the Security/Sentinel view. Feature Onboard's own
     UI (`public/onboard.js`) escapes every operator-controlled value, but the
     legacy file was deliberately not rewritten in this work.
-14. **Optional `workstreamId` references are not existence-checked.** A record
+19. **Optional `workstreamId` references are not existence-checked.** A record
     may point at a workstream that was later removed; this is preferred over
     letting an unrelated deletion invalidate a record.
-15. **No accessibility audit by a real screen reader.** Semantics are asserted
+20. **No accessibility audit by a real screen reader.** Semantics are asserted
     programmatically (roles, `aria-valuetext`, focus, Escape), which is not the
     same as verified assistive-technology behavior.

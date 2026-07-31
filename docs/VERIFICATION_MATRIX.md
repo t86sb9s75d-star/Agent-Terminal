@@ -104,7 +104,7 @@ was actually checked:
 | YC score is never presented as an acceptance probability | Automated-test verified | `test/frontend/featureOnboard.test.js` asserts the rendered copy contains no probability language |
 | Onboarding first-run / skip / resume / complete / reopen | Automated-test verified | `test/frontend/featureOnboard.test.js` (5 cases) + `test/integration.test.js` |
 | Operator-controlled values render as text, not markup | Automated-test verified | `test/frontend/featureOnboard.test.js` — HTML, event-handler and quote-breaking payloads; proven to fail when `esc()` or `attr()` is broken |
-| Every Feature Onboard store is registered for operator recovery | Automated-test verified | `test/integration.test.js` — proven to fail when one store is unregistered |
+| Every Feature Onboard store is **registered** for operator recovery | Automated-test verified | `test/integration.test.js` — proven to fail when one store is unregistered. **Verifies routing, not repair**: it calls `restore_backup` on healthy stores and asserts 200. Recovery from `corrupt_no_backup` is untested and currently returns 500 for both resolutions — see `docs/PERSISTENCE_AND_RECOVERY.md` and A-003. |
 | Feature Onboard permission values gate agent behavior | **Not verified — nothing gates on them, by design** | **Zero of thirteen.** Established by reading every call site: `budget.assertWithinBudget()` and `src/workers/custom.js` both run unconditionally and never read these values. Three capabilities have a related always-on system control; none of the thirteen toggles gates anything. `test/domainModel.test.js` asserts `gatedByStoredValue === false` for all thirteen as a tripwire against a future overclaim. |
 | Every capability is reviewable and configurable by the operator | Automated-test verified | `test/frontend/featureOnboard.test.js` — asserts all 13 backend keys render with their classification and enforcement point; proven to fail when 5 are dropped |
 | No permission surface claims enforcement or approval it does not have | Automated-test verified | `test/frontend/featureOnboard.test.js` — checks the onboarding step, the agents tab and Settings against a list of forbidden *claims* (not vocabulary); proven to fail when "require your approval" is reintroduced |
@@ -112,6 +112,8 @@ was actually checked:
 | Every backend record type is reachable and usable by an operator | Automated-test verified | `test/frontend/featureOnboard.test.js` — reads the authoritative type list from `workspaceRecordsStore.ALL` and creates each through the real dialog; proven to fail when a tab is removed or a mapping omitted |
 | Every API route is either operator-reachable or a documented API-only route | Automated-test verified | `test/routeCoverage.test.js` — collects routes from the real registration function; proven to fail on an unclassified route and on a `ui` route with no call site |
 | One tampered store yields one integrity event per request, not one per entity | Automated-test verified | `test/integration.test.js` — 5 workspaces / 4 agents; proven to fail against the pre-fix code (5 and 8 events respectively) |
+| A superseded workspace load can never render over the current one | Automated-test verified | `test/frontend/featureOnboard.test.js` — forces the race by delaying one workspace's fetch; proven to fail before the load-token fix |
+| Behaviour under **concurrent** operator actions | **Not verified** | Every test in every layer is strictly sequential. Races are only covered where a test forces one explicitly (the load-token case above). Concurrent permission edits are known-broken — see A-002. |
 | A failed record load is shown as an error, never as an empty state | Automated-test verified | `test/frontend/featureOnboard.test.js` — corrupts a store beyond recovery and asserts the UI never renders "No workspaces yet" |
 | Optional dates reject objects, arrays, malformed and ambiguous strings | Automated-test verified | `test/workspaceStores.test.js` + `test/integration.test.js` — all three date fields driven from one table; proven to fail against the pre-fix code |
 | Accessibility semantics (dialog, tablist, progressbar, focus, Escape) | Automated-test verified (programmatic only) | `test/frontend/featureOnboard.test.js` — asserts roles/aria values/keyboard behavior. This is NOT the same as verification with a real screen reader, which was not done. |
@@ -135,10 +137,10 @@ this repository have drifted twice before; they are regenerated, never edited.
 
 `test/integration.test.js` (**35** cases, spawning real server processes
 against throwaway data directories) +
-`test/frontend/featureOnboard.test.js` (**39** cases, driving real Chromium
+`test/frontend/featureOnboard.test.js` (**40** cases, driving real Chromium
 against a real server).
 
-**97 unit + 35 integration + 39 browser = 171 tests, all passing** as of the
+**97 unit + 35 integration + 40 browser = 172 tests, all passing** as of the
 final commit on this branch, and verified green in CI on the remote branch
 (`.github/workflows/ci.yml`).
 

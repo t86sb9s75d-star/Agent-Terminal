@@ -263,6 +263,42 @@ async function run() {
   // asserts both directions for every type: each workspace shows its own record
   // AND does not show the other's. A blank panel now fails on the positive half;
   // a panel leaking everything fails on the negative half.
+  await check('[regression] a slow load for an abandoned workspace can never paint over the current one', async ({ page, base }) => {
+    // A-001. Every other isolation case here WAITS for the correct data before
+    // asserting, so none of them can observe a stale load landing afterwards —
+    // the suite was structurally blind to this. The race is forced here by
+    // delaying exactly one workspace's fetch, so it is deterministic rather
+    // than timing-dependent.
+    const a = await seedWorkspace(base, 'Alpha');
+    const b = (await api(base, '/api/workspaces', 'POST', { name: 'Beta' })).body;
+    await api(base, `/api/workspaces/${a.id}/goals`, 'POST', { title: 'ALPHA-SECRET' });
+    await api(base, `/api/workspaces/${b.id}/goals`, 'POST', { title: 'BETA-SECRET' });
+
+    // Workspace A's goals resolve long after the operator has moved to B.
+    await page.route(`**/api/workspaces/${a.id}/goals`, async (route) => {
+      await new Promise((r) => setTimeout(r, 1500));
+      await route.continue();
+    });
+
+    await page.goto(base, { waitUntil: 'networkidle' });
+    await page.click('.rail-item[data-view="business"]');
+    await page.waitForSelector('#fo-workspace');
+    await page.click('[data-fo-tab="goals"]');
+
+    await page.selectOption('#fo-workspace', a.id);
+    await page.waitForTimeout(100);       // A's load is in flight and will hang
+    await page.selectOption('#fo-workspace', b.id);
+
+    // B's data must arrive...
+    await expectText(page, '#fo-business-panel', 'BETA-SECRET', 'the newly selected workspace must render');
+    // ...and A's abandoned load must never overwrite it when it finally lands.
+    await page.waitForTimeout(2500);
+    assert.strictEqual(await page.$eval('#fo-workspace', (el) => el.value), b.id, 'the selector must still read Beta');
+    await expectNoText(page, '#fo-business-panel', 'ALPHA-SECRET',
+      'a superseded load must never paint another workspace\'s records over the current one');
+    await expectText(page, '#fo-business-panel', 'BETA-SECRET', 'and the current workspace must still be rendered');
+  });
+
   await check('[contract] every workspace-owned record type is isolated per workspace, both directions', async ({ page, base }) => {
     const a = await seedWorkspace(base, 'Alpha');
     const b = (await api(base, '/api/workspaces', 'POST', { name: 'Beta' })).body;
