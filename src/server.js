@@ -284,16 +284,31 @@ app.post('/api/workstreams/:id/resolve/:runId', (req, res) => {
 });
 
 // --- Agents CRUD ---
-function withWorkstreamName(agent) {
-  const ws = agent.workstreamId ? workstreamsStore.get(agent.workstreamId) : null;
+// `workstreams` may be a pre-read list. Resolving the name for a LIST of
+// agents must pass one, otherwise every agent re-reads (and re-integrity-
+// checks) workstreams.json — see the single-read note on GET /api/agents.
+function withWorkstreamName(agent, workstreams = null) {
+  if (!agent.workstreamId) return { ...agent, workstreamName: null };
+  const ws = workstreams
+    ? workstreams.find((w) => w.id === agent.workstreamId)
+    : workstreamsStore.get(agent.workstreamId);
   return { ...agent, workstreamName: ws ? ws.name : null };
 }
 
 app.get('/api/agents', (req, res) => {
+  // Read each store exactly ONCE for the whole request. This previously
+  // called getAgentRuns() and workstreamsStore.get() inside the map, so N
+  // agents meant 2N reads of runs.json and N of workstreams.json. Because
+  // every versionedStore.read() is an integrity checkpoint that emits an
+  // audit event and a Sentinel finding on a tampered file, that turned one
+  // out-of-band edit into 2N identical critical findings per page load
+  // (R-006, same root cause as the workspace-listing instance).
   const statuses = agentManager.getAllStatuses();
+  const allRuns = runsStore.listAll();
+  const workstreams = workstreamsStore.list();
   const agents = store.list().map((a) => {
-    const runSummary = agentManager.getAgentRuns(a.id).summary;
-    return withWorkstreamName({ ...a, ...statuses[a.id], ...runSummary });
+    const runSummary = runsStore.summarizeForAgent(a.id, allRuns);
+    return withWorkstreamName({ ...a, ...statuses[a.id], ...runSummary }, workstreams);
   });
   res.json(agents);
 });

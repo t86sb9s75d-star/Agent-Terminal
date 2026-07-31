@@ -279,6 +279,32 @@ function createRecordStore({ type, fileName, storeName, validate }) {
     return readAll().filter((r) => r.workspaceId === wsId);
   }
 
+  // Deliberately UNSCOPED, for the one legitimate cross-workspace case: an
+  // aggregate that must cover every workspace in a single request (see
+  // featureOnboardApi.decorateWorkspaces). Calling listForWorkspace() in a
+  // loop instead re-reads and re-integrity-checks the file once per
+  // workspace, which turns one tamper event into N (R-006).
+  //
+  // This is NOT a scoping hole: it returns records that still carry their own
+  // workspaceId, and no request handler may hand its output to the operator
+  // without grouping by that field first. Every operator-facing read path
+  // still goes through listForWorkspace/getForWorkspace.
+  function listAll() {
+    return readAll();
+  }
+
+  // Group every record by workspaceId in one pass, so a caller that needs
+  // all workspaces reads the file exactly once. Returns a plain object with
+  // a null prototype so a workspace id like "__proto__" cannot collide with
+  // an inherited property.
+  function groupByWorkspace() {
+    const out = Object.create(null);
+    for (const r of readAll()) {
+      (out[r.workspaceId] = out[r.workspaceId] || []).push(r);
+    }
+    return out;
+  }
+
   // Scoped get: matches on BOTH workspaceId and id, so a valid id under a
   // different workspace resolves to null (not a cross-workspace read).
   function getForWorkspace(workspaceId, id) {
@@ -316,7 +342,7 @@ function createRecordStore({ type, fileName, storeName, validate }) {
 
   function recover(resolution) { return store().recover(resolution); }
 
-  return { type, init, create, listForWorkspace, getForWorkspace, updateForWorkspace, removeForWorkspace, recover };
+  return { type, init, create, listForWorkspace, listAll, groupByWorkspace, getForWorkspace, updateForWorkspace, removeForWorkspace, recover };
 }
 
 // The six workspace-owned record stores.

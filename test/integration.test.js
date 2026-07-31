@@ -1030,6 +1030,118 @@ async function run() {
     }
   });
 
+  // R-006 — one request must not multiply one integrity signal.
+  //
+  // versionedStore.read() is an integrity checkpoint by design: a tampered
+  // store stays flagged on EVERY read, indefinitely, until the operator
+  // explicitly recovers it (docs/PERSISTENCE_AND_RECOVERY.md). That contract
+  // is correct and is deliberately NOT changed here. What was wrong is how
+  // many times one request read the same store: GET /api/workspaces computed
+  // progress inside a per-workspace loop, so N workspaces meant N reads, N
+  // audit events and N critical Sentinel findings from ONE hand edit.
+  //
+  // The assertion derived from that documented contract is therefore
+  // "one read per store per request", not "only ever one event": a second
+  // request legitimately re-flags, because it is a second read of a store
+  // that is still tampered. Asserting zero on the second request would be
+  // asserting that tamper detection stops working.
+  const countEvents = (dataDir, action) => {
+    const p = path.join(dataDir, 'events.jsonl');
+    if (!fs.existsSync(p)) return 0;
+    return fs.readFileSync(p, 'utf8').split('\n').filter((l) => l.includes(`"${action}"`)).length;
+  };
+
+  await check('one tampered store + one list request = one integrity event, not one per entity', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      // 5 workspaces, and a goal with milestones so progress is a real number
+      // (not null) and we can prove the fix did not change the math.
+      const ids = [];
+      for (let i = 0; i < 5; i += 1) {
+        ids.push((await json(await post(server.baseUrl, '/api/workspaces', { name: `WS${i}` }))).body.id);
+      }
+      await post(server.baseUrl, `/api/workspaces/${ids[0]}/goals`, {
+        title: 'Half done',
+        milestones: [{ label: 'a', done: true }, { label: 'b', done: false }],
+      });
+
+      const before = (await json(await fetch(`${server.baseUrl}/api/workspaces`))).body;
+      const progressBefore = Object.fromEntries(before.map((w) => [w.id, w.progress.progress]));
+      assert.strictEqual(progressBefore[ids[0]], 50, 'baseline progress must be a real 50');
+      assert.strictEqual(progressBefore[ids[1]], null, 'a workspace with no milestones stays null, not 0');
+
+      // one out-of-band edit to one store
+      const goalsFile = path.join(dataDir, 'workspace_goals.json');
+      const envelope = JSON.parse(fs.readFileSync(goalsFile, 'utf8'));
+      envelope.records[0].title = 'EDITED BY HAND';
+      fs.writeFileSync(goalsFile, JSON.stringify(envelope, null, 2));
+
+      const base = countEvents(dataDir, 'workspace_goals.tamper_detected');
+      await fetch(`${server.baseUrl}/api/workspaces`);
+      const afterOne = countEvents(dataDir, 'workspace_goals.tamper_detected') - base;
+      assert.strictEqual(afterOne, 1, `one list request over 5 workspaces must emit exactly 1 tamper event, got ${afterOne}`);
+
+      // Sentinel must see one incident, not five copies of it
+      const findings = (await json(await fetch(`${server.baseUrl}/api/security/findings`))).body;
+      const rows = (Array.isArray(findings) ? findings : findings.findings || [])
+        .filter((f) => f.ruleId === 'store_integrity_failure' && f.entityId === 'workspace_goals');
+      assert.strictEqual(rows.length, 1, `one tamper must create 1 Sentinel finding, got ${rows.length}`);
+
+      // Second request: the store is still tampered and this is a second read,
+      // so exactly one more event is the documented behavior — no suppression.
+      await fetch(`${server.baseUrl}/api/workspaces`);
+      const afterTwo = countEvents(dataDir, 'workspace_goals.tamper_detected') - base;
+      assert.strictEqual(afterTwo, 2, `a second request must re-flag exactly once, got ${afterTwo - 1} new events`);
+
+      // and the progress math is unchanged by the single-read rewrite
+      const after = (await json(await fetch(`${server.baseUrl}/api/workspaces`))).body;
+      assert.deepStrictEqual(
+        Object.fromEntries(after.map((w) => [w.id, w.progress.progress])),
+        progressBefore,
+        'grouping milestones by workspace must produce identical progress'
+      );
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('listing agents does not re-read the runs store once per agent', async () => {
+    // Same root cause, pre-existing instance found by the repo-wide search:
+    // GET /api/agents called getAgentRuns(a.id) inside the map, and each call
+    // read runs.json twice (listForAgent + summarizeForAgent), plus one
+    // workstreams.json read per agent for the workstream name.
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const ws = (await json(await post(server.baseUrl, '/api/workstreams', { name: 'WS' }))).body;
+      for (let i = 0; i < 4; i += 1) {
+        await post(server.baseUrl, '/api/agents', { name: `A${i}`, provider: 'custom', command: 'echo hi', workstreamId: ws.id });
+      }
+      const before = (await json(await fetch(`${server.baseUrl}/api/agents`))).body;
+      assert.strictEqual(before.length, 4);
+      assert.ok(before.every((a) => a.workstreamName === 'WS'), 'workstream names must still be resolved');
+
+      for (const store of ['runs', 'workstreams']) {
+        const file = path.join(dataDir, `${store}.json`);
+        const envelope = JSON.parse(fs.readFileSync(file, 'utf8'));
+        envelope.records.push({ id: `injected-${store}`, name: 'x' });
+        fs.writeFileSync(file, JSON.stringify(envelope, null, 2));
+
+        const base = countEvents(dataDir, `${store}.tamper_detected`);
+        await fetch(`${server.baseUrl}/api/agents`);
+        const delta = countEvents(dataDir, `${store}.tamper_detected`) - base;
+        assert.strictEqual(delta, 1, `one /api/agents request must read ${store}.json once, got ${delta} events`);
+      }
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   await check('every Feature Onboard store is registered for operator recovery', async () => {
     // A newly added store that the recovery endpoint does not know about is a
     // real gap: it would be the one store an operator could not repair after

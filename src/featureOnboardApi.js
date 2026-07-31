@@ -29,14 +29,27 @@ const { AppError, Codes } = require('./errors');
 // deterministic progress number (see progress.workspaceProgress). Null when
 // there are no milestones yet — never a fabricated 0. Computed here, never
 // read from the client.
-function computeWorkspaceProgress(workspaceId) {
-  const goals = records.goals.listForWorkspace(workspaceId);
-  const allMilestones = goals.flatMap((g) => g.milestones || []);
-  return workspaceProgress(allMilestones);
+function progressFromGoals(goals) {
+  return workspaceProgress((goals || []).flatMap((g) => g.milestones || []));
 }
 
 function decorateWorkspace(ws) {
-  return { ...ws, progress: computeWorkspaceProgress(ws.id) };
+  return { ...ws, progress: progressFromGoals(records.goals.listForWorkspace(ws.id)) };
+}
+
+// The list endpoint's decorator. Reads the goals store ONCE for the whole
+// request and groups it, instead of calling listForWorkspace() per workspace.
+//
+// This is not a latency optimization. Every versionedStore.read() is an
+// integrity checkpoint that emits an audit event and a Sentinel finding when
+// the file has been tampered with, so a per-workspace read turned one
+// out-of-band edit into N identical critical findings per page load, growing
+// without bound (R-006). Fixing it here stops the duplicates being generated;
+// deduplicating them in Sentinel instead would have suppressed a real signal
+// rather than stopped manufacturing it.
+function decorateWorkspaces(workspaces) {
+  const goalsByWorkspace = records.goals.groupByWorkspace();
+  return workspaces.map((ws) => ({ ...ws, progress: progressFromGoals(goalsByWorkspace[ws.id]) }));
 }
 
 function registerFeatureOnboardRoutes(app, { eventLog, actorFromRequest, sendError }) {
@@ -99,7 +112,7 @@ function registerFeatureOnboardRoutes(app, { eventLog, actorFromRequest, sendErr
   // --- Workspaces ---
 
   app.get('/api/workspaces', (req, res) => {
-    res.json(workspacesStore.list().map(decorateWorkspace));
+    res.json(decorateWorkspaces(workspacesStore.list()));
   });
 
   app.get('/api/workspaces/:workspaceId', (req, res) => {
@@ -238,4 +251,6 @@ function registerFeatureOnboardRoutes(app, { eventLog, actorFromRequest, sendErr
 // The stores that must be init'd at boot and added to the recovery map.
 const STORES = { workspacesStore, records, founderProfile, onboarding, yc, agentSettings };
 
-module.exports = { registerFeatureOnboardRoutes, STORES, computeWorkspaceProgress };
+// computeWorkspaceProgress was exported here but had no caller anywhere in
+// src/, test/ or public/ — a dead export, removed rather than renamed.
+module.exports = { registerFeatureOnboardRoutes, STORES };
