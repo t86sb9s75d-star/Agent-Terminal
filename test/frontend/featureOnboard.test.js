@@ -449,6 +449,168 @@ async function run() {
     assert.notDeepStrictEqual(earlyRecs.sort(), lateRecs.sort(), 'recommendations must differ by stage');
   });
 
+  // ---------------- permission review (R-002, R-004) ----------------
+
+  const CAPABILITIES = require('../../src/permissions').CAPABILITIES;
+  const RUNTIME_SUMMARY = require('../../src/permissions').RUNTIME_ENFORCEMENT_SUMMARY;
+
+  async function openPermissionsFor(page, agentId) {
+    await page.click('[data-fo-tab="agents"]');
+    await page.waitForSelector(`[data-fo-perms="${agentId}"]`);
+    await page.click(`[data-fo-perms="${agentId}"]`);
+    await page.waitForSelector(`#fo-perms-${agentId} .fo-perm`);
+  }
+
+  await check('[contract] the permission surface lists every backend capability with its real classification', async ({ page, base }) => {
+    // The whole point of R-002: there was no permission surface at all, while
+    // three documents said there was. The catalog is read from the backend so
+    // a 14th capability cannot appear in code and be missing from the screen.
+    await seedWorkspace(base, 'Perms');
+    await page.goto(base, { waitUntil: 'networkidle' });
+    await page.click('.rail-item[data-view="business"]');
+    await page.waitForSelector('.fo-tab');
+    await openPermissionsFor(page, 'interview_agent');
+
+    const rendered = await page.$$eval('#fo-perms-interview_agent [data-fo-perm]', (els) => els.map((e) => e.dataset.foPerm));
+    assert.strictEqual(rendered.length, CAPABILITIES.length, `expected all ${CAPABILITIES.length} capabilities, got ${rendered.length}`);
+    for (const cap of CAPABILITIES) {
+      assert.ok(rendered.includes(cap.key), `capability "${cap.key}" is missing from the permission surface`);
+    }
+
+    const panel = await page.textContent('#fo-perms-interview_agent');
+    for (const cap of CAPABILITIES) {
+      assert.ok(panel.includes(cap.label), `capability label "${cap.label}" is not shown`);
+    }
+    // Each of the three system controls must NAME its code path on screen.
+    for (const cap of CAPABILITIES.filter((c) => c.enforcement === 'system_control')) {
+      assert.ok(panel.includes(cap.enforcementPoint), `"${cap.key}" must name its enforcement point on screen`);
+    }
+    // The classifications must be distinguishable, not a uniform label.
+    assert.ok(panel.includes('System control'), 'system-controlled capabilities must be marked');
+    assert.ok(panel.includes('Recorded only'), 'recorded-only capabilities must be marked');
+  });
+
+  await check('[regression] permission changes persist per workspace and per agent', async ({ page, base }) => {
+    const a = await seedWorkspace(base, 'PermA');
+    const b = (await api(base, '/api/workspaces', 'POST', { name: 'PermB' })).body;
+    await page.goto(base, { waitUntil: 'networkidle' });
+    await page.click('.rail-item[data-view="business"]');
+    await page.waitForSelector('#fo-workspace');
+    await page.selectOption('#fo-workspace', a.id);
+    await page.waitForTimeout(300);
+    await openPermissionsFor(page, 'interview_agent');
+
+    // Two capabilities, both moved AWAY from their defaults, changed one after
+    // the other. Asserting on values that happen to equal the default proves
+    // nothing: the store fills missing keys from defaultPermissionsFor(), so a
+    // client that posts only the changed key still produces the default value
+    // for everything else and a weaker version of this test passes. Granting
+    // edit_files and THEN run_commands is what detects it — under a partial
+    // send the second write resets the first back to off.
+    const editBox = '#fo-perms-interview_agent [data-fo-perm="edit_files"]';
+    const cmdBox = '#fo-perms-interview_agent [data-fo-perm="run_commands"]';
+    const readBox = '#fo-perms-interview_agent [data-fo-perm="read_workspace_data"]';
+    assert.strictEqual(await page.isChecked(editBox), false, 'edit_files must start off (least authority)');
+    assert.strictEqual(await page.isChecked(readBox), true, 'read_workspace_data starts on so the agent can function');
+
+    await page.check(editBox);
+    await page.waitForTimeout(500);
+    await page.check(cmdBox);
+    await page.waitForTimeout(500);
+    // and revoke one that starts ON, so a default-fill is detectable there too
+    await page.uncheck(readBox);
+    await page.waitForTimeout(500);
+
+    // survives a full reload, read back from disk
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.click('.rail-item[data-view="business"]');
+    await page.waitForSelector('.fo-tab');
+    await openPermissionsFor(page, 'interview_agent');
+    assert.strictEqual(await page.isChecked(editBox), true, 'the first grant must survive both the second write and the reload');
+    assert.strictEqual(await page.isChecked(cmdBox), true, 'the second grant must survive reload');
+    assert.strictEqual(await page.isChecked(readBox), false, 'a revoked capability must not be refilled from the default');
+
+    const settings = (await api(base, `/api/workspaces/${a.id}/agents`)).body;
+    const row = settings.agents.find((x) => x.id === 'interview_agent');
+    assert.strictEqual(row.effectivePermissions.edit_files, true, 'an earlier grant must not be reset by a later write');
+    assert.strictEqual(row.effectivePermissions.run_commands, true);
+    assert.strictEqual(row.effectivePermissions.read_workspace_data, false, 'a revocation must persist, not fall back to the default');
+    assert.strictEqual(row.effectivePermissions.spend_money, false, 'unrelated consequential capabilities must stay off');
+
+    // scoped: workspace B's copy of the same global agent is untouched
+    const other = (await api(base, `/api/workspaces/${b.id}/agents`)).body;
+    assert.strictEqual(other.agents.find((x) => x.id === 'interview_agent').effectivePermissions.edit_files, false,
+      'a permission granted in one workspace must not leak into another');
+  });
+
+  await check('[contract] no permission surface claims enforcement or approval it does not have', async ({ page, base }) => {
+    // R-004. Deliberately NOT a blanket word ban — "not enforced" and
+    // "Nothing in the runtime reads this value" are the honest phrasings and
+    // must stay possible. What is forbidden is a CLAIM: language asserting
+    // that ticking a box stops, gates or guarantees something.
+    const FORBIDDEN = [
+      /requires? your approval/i,
+      /require approval/i,
+      /approval (is )?required/i,
+      /will be blocked/i,
+      /is blocked/i,
+      /are blocked/i,
+      /is prevented/i,
+      /are prevented/i,
+      /is protected/i,
+      /are protected/i,
+      /disabled at (the )?system level/i,
+      /guarantee[sd]?\b/i,
+      /cannot spend/i,
+      /we will ask you first/i,
+      // "is/are enforced" as a bare claim. The catalog's own honest phrasings
+      // ("Nothing in the runtime reads this value", "Always-on control: ...")
+      // do not match, and neither does "not enforced".
+      /(?<!not )\bis enforced\b/i,
+      /(?<!not )\bare enforced\b/i,
+    ];
+
+    const assertClean = (text, where) => {
+      for (const rx of FORBIDDEN) {
+        assert.ok(!rx.test(text), `${where} contains a claim the code does not support: ${rx}`);
+      }
+    };
+
+    // 1. the onboarding permissions step
+    await page.goto(base, { waitUntil: 'networkidle' });
+    await page.waitForSelector('.fo-wizard');
+    await page.click('[data-wz="next"][data-next="profile"]');
+    await page.click('[data-wz="next"][data-next="operating_mode"]');
+    await page.click('[data-wz="next"][data-next="workspace"]');
+    await page.fill('.fo-wizard [name="name"]', 'CopyCheck');
+    await page.click('[data-wz="next"][data-next="agents"]');
+    await page.click('[data-wz="next"][data-next="permissions"]');
+    await page.waitForSelector('.fo-wizard .fo-perm');
+
+    const step = await page.textContent('.fo-wizard-body');
+    assertClean(step, 'the onboarding permissions step');
+
+    // It must also be a REAL surface, not two paragraphs: every capability
+    // reviewable before onboarding claims permission review happened.
+    const wizardRows = await page.$$eval('.fo-wizard .fo-perm .fo-perm-label', (els) => els.map((e) => e.textContent.trim()));
+    assert.strictEqual(wizardRows.length, CAPABILITIES.length, 'the onboarding step must list every capability');
+    assert.ok(step.includes(RUNTIME_SUMMARY), 'the onboarding step must state the runtime-enforcement summary verbatim');
+    assert.ok(/no approval queue/i.test(step), 'the step must say plainly that no approval queue exists');
+
+    // 2. the per-agent permission surface
+    await page.click('[data-wz="next"][data-next="yc"]');
+    await page.click('[data-wz="next"][data-next="review"]');
+    await page.click('[data-wz="next"][data-next="done"]');
+    await page.waitForSelector('.fo-cc-name');
+    await openPermissionsFor(page, 'interview_agent');
+    assertClean(await page.textContent('#fo-business-panel'), 'the agents tab');
+
+    // 3. and the settings view, which also talks about the operating model
+    await page.click('.rail-item[data-view="settings"]');
+    await page.waitForSelector('#view-settings .fo-card');
+    assertClean(await page.textContent('#view-settings'), 'the settings view');
+  });
+
   await check('[smoke] per-workspace agent enablement persists across reload', async ({ page, base }) => {
     const ws = await seedWorkspace(base, 'Agents');
     await page.goto(base, { waitUntil: 'networkidle' });

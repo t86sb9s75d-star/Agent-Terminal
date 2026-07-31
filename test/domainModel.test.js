@@ -89,8 +89,41 @@ check('default permissions grant no consequential capability', () => {
 check('spending, paid calls, contacting people, and acting without approval are consequential', () => {
   for (const key of ['spend_money', 'paid_model_calls', 'contact_people', 'act_without_approval', 'run_commands']) {
     assert.ok(permissions.CONSEQUENTIAL_KEYS.includes(key), `${key} should be consequential`);
-    assert.strictEqual(permissions.requiresApproval(key), true);
+    assert.strictEqual(permissions.isConsequential(key), true);
   }
+  // "consequential" must not be read as "approval-gated": no approval
+  // mechanism exists, which is why requiresApproval() was removed.
+  assert.strictEqual(permissions.requiresApproval, undefined);
+});
+
+// The permission catalog is the single authority the UI and the docs both
+// read. These cases exist so the catalog cannot quietly claim more than the
+// code does — which is what happened when three capabilities were labelled
+// "enforced" while nothing consulted their stored value.
+check('every capability declares its enforcement classification and gating honestly', () => {
+  const valid = ['system_control', 'recorded_only'];
+  assert.strictEqual(permissions.CAPABILITIES.length, 13);
+  for (const cap of permissions.CAPABILITIES) {
+    assert.ok(valid.includes(cap.enforcement), `${cap.key} has an unknown enforcement value: ${cap.enforcement}`);
+    // A system control must NAME where it lives, or the claim is unverifiable.
+    if (cap.enforcement === 'system_control') {
+      assert.ok(cap.enforcementPoint && cap.enforcementPoint.includes('src/'), `${cap.key} claims a system control but names no code path`);
+    } else {
+      assert.strictEqual(cap.enforcementPoint, null, `${cap.key} is recorded-only and must not name an enforcement point`);
+    }
+  }
+});
+
+check('no capability claims its stored value gates anything', () => {
+  // Verified against every call site: budget.assertWithinBudget() and
+  // workers/custom.js both run unconditionally and never read these values.
+  // If a real gate is ever written, flip that one capability here and the UI
+  // copy follows automatically — this test is the tripwire for that change.
+  for (const cap of permissions.CAPABILITIES) {
+    assert.strictEqual(cap.gatedByStoredValue, false, `${cap.key} claims to be gated by its stored value — prove it with a call site first`);
+  }
+  assert.match(permissions.RUNTIME_ENFORCEMENT_SUMMARY, /No setting on this screen is consulted by the runtime/);
+  assert.match(permissions.RUNTIME_ENFORCEMENT_SUMMARY, /recorded, not what an agent can do/);
 });
 
 check('normalizePermissions rejects unknown capabilities', () => {
@@ -103,15 +136,26 @@ check('normalizePermissions coerces to booleans and fills defaults', () => {
   assert.strictEqual(norm.contact_people, false); // filled from conservative default
 });
 
-check('enforcement labels are honest: only genuinely-gated caps are "enforced"', () => {
-  const byKey = Object.fromEntries(permissions.CAPABILITIES.map((c) => [c.key, c.enforcement]));
-  // These have real code paths (budget.js caps, custom-provider boundary).
-  assert.strictEqual(byKey.spend_money, 'enforced');
-  assert.strictEqual(byKey.paid_model_calls, 'enforced');
-  assert.strictEqual(byKey.use_custom_provider, 'enforced');
-  // These are stored preferences only in Phase 1 — must NOT claim enforcement.
-  assert.strictEqual(byKey.contact_people, 'preference');
-  assert.strictEqual(byKey.edit_files, 'preference');
+// This case used to assert enforcement === 'enforced' for spend_money,
+// paid_model_calls and use_custom_provider, and it passed — which is how a
+// misleading claim survives review: it had a green test defending it. The
+// three do have an always-on system control, but nothing reads their stored
+// per-agent value, so "enforced" invited the operator to believe the toggle
+// did something. The classification now separates those two facts.
+check('the three capabilities with a system control name it; the other ten claim nothing', () => {
+  const byKey = Object.fromEntries(permissions.CAPABILITIES.map((c) => [c.key, c]));
+  for (const key of ['spend_money', 'paid_model_calls', 'use_custom_provider']) {
+    assert.strictEqual(byKey[key].enforcement, 'system_control');
+    assert.ok(byKey[key].enforcementPoint, `${key} must name where its control lives`);
+    // ...and that control is NOT this toggle.
+    assert.strictEqual(byKey[key].gatedByStoredValue, false);
+  }
+  assert.strictEqual(byKey.contact_people.enforcement, 'recorded_only');
+  assert.strictEqual(byKey.edit_files.enforcement, 'recorded_only');
+  assert.strictEqual(byKey.act_without_approval.enforcement, 'recorded_only');
+
+  const controlled = permissions.CAPABILITIES.filter((c) => c.enforcement === 'system_control');
+  assert.strictEqual(controlled.length, 3, 'exactly three capabilities have a system-level control today');
 });
 
 console.log(`\n${passed} passed`);

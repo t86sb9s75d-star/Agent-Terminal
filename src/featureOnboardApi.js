@@ -21,7 +21,7 @@ const yc = require('./ycStore');
 const agentSettings = require('./workspaceAgentSettingsStore');
 const { STAGES } = require('./businessStages');
 const { CATALOG, STAGE_RECOMMENDATIONS, recommendationsForStage } = require('./agentCatalog');
-const { CAPABILITIES } = require('./permissions');
+const { CAPABILITIES, RUNTIME_ENFORCEMENT_SUMMARY, defaultPermissionsFor } = require('./permissions');
 const { workspaceProgress } = require('./progress');
 const { AppError, Codes } = require('./errors');
 
@@ -68,7 +68,15 @@ function registerFeatureOnboardRoutes(app, { eventLog, actorFromRequest, sendErr
   app.get('/api/stages', (req, res) => res.json(STAGES));
 
   app.get('/api/catalog', (req, res) => {
-    res.json({ agents: CATALOG, recommendations: STAGE_RECOMMENDATIONS, capabilities: CAPABILITIES });
+    // runtimeEnforcementSummary is shipped so the UI renders the enforcement
+    // claim verbatim from src/permissions.js instead of writing its own
+    // version of it — one sentence, one source, no drift.
+    res.json({
+      agents: CATALOG,
+      recommendations: STAGE_RECOMMENDATIONS,
+      capabilities: CAPABILITIES,
+      runtimeEnforcementSummary: RUNTIME_ENFORCEMENT_SUMMARY,
+    });
   });
 
   // --- Founder profile (singleton) ---
@@ -215,7 +223,18 @@ function registerFeatureOnboardRoutes(app, { eventLog, actorFromRequest, sendErr
       const byId = Object.fromEntries(settings.map((s) => [s.agentId, s]));
       // Merge the global catalog with this workspace's per-agent settings, and
       // surface the stage-based recommendation set (advisory, not a lock).
-      const agents = CATALOG.map((a) => ({ ...a, settings: byId[a.id] || null }));
+      //
+      // `settings` stays null for an agent that has never been configured —
+      // that distinction is real and worth keeping. `effectivePermissions` is
+      // what would apply right now, resolved HERE from the same
+      // defaultPermissionsFor() the store uses. The permission UI must render
+      // resolved values, not re-derive defaults client-side: a second copy of
+      // the default rule would show one thing while the store held another.
+      const agents = CATALOG.map((a) => ({
+        ...a,
+        settings: byId[a.id] || null,
+        effectivePermissions: byId[a.id] ? byId[a.id].permissions : defaultPermissionsFor(),
+      }));
       res.json({ agents, recommended: recommendationsForStage(ws.stage).map((a) => a.id) });
     } catch (err) { sendError(res, err, req); }
   });

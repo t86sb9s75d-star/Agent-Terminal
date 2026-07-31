@@ -38,7 +38,8 @@
   const state = {
     view: null, // 'business' | 'yc' | 'settings' when one of ours is active
     stages: [],
-    catalog: { agents: [], recommendations: {}, capabilities: [] },
+    catalog: { agents: [], recommendations: {}, capabilities: [], runtimeEnforcementSummary: '' },
+    openPermissions: null, // agent id whose permission list is expanded
     workspaces: [],
     activeWorkspaceId: null,
     records: {}, // { goals: [], tasks: [], decisions: [], assumptions: [], experiments: [], evidence: [] }
@@ -377,22 +378,73 @@
         </div>`).join('')}</div>`}`;
   }
 
+  // ---- permissions ------------------------------------------------------
+  //
+  // Every string below that classifies a capability comes from the BACKEND
+  // catalog (GET /api/catalog -> capabilities, i.e. src/permissions.js). There
+  // is deliberately no second capability list in this file: a hard-coded copy
+  // is how a UI ends up describing permissions the code does not have. The
+  // reachability contract asserts all 13 backend keys are rendered.
+  //
+  // Vocabulary rule: a recorded-only capability is never called blocked,
+  // protected, prevented, disabled, enforced, approval-gated or guaranteed,
+  // because none of those is true of it. It is called recorded.
+  function capabilityBadge(cap) {
+    return cap.enforcement === 'system_control'
+      ? pill('System control', 'fo-pill-strong')
+      : pill('Recorded only', '');
+  }
+
+  function permissionRows(agentId, perms) {
+    const caps = state.catalog.capabilities || [];
+    if (caps.length === 0) return empty('Capability catalog unavailable.');
+    return `<div class="fo-perms">${caps.map((cap) => `
+      <div class="fo-perm">
+        <label class="fo-perm-main">
+          <input type="checkbox" data-fo-perm="${attr(cap.key)}" data-agent="${attr(agentId)}" ${perms && perms[cap.key] ? 'checked' : ''}/>
+          <span class="fo-perm-label">${esc(cap.label)}</span>
+        </label>
+        <div class="fo-perm-meta">
+          ${capabilityBadge(cap)}
+          ${cap.enforcementPoint
+            ? `<span class="fo-perm-where">Always-on control: ${esc(cap.enforcementPoint)}. It applies to every run and does not read this setting.</span>`
+            : '<span class="fo-perm-where">Nothing in the runtime reads this value.</span>'}
+        </div>
+      </div>`).join('')}</div>`;
+  }
+
+  // The honest header, rendered verbatim from the backend so the UI and the
+  // docs cannot drift apart on the one claim that matters most.
+  function permissionsPreamble() {
+    return `<p class="fo-hint fo-note">${esc(state.catalog.runtimeEnforcementSummary || '')}
+      Three capabilities have a separate always-on system control, named against each below; that control runs for every agent whether or not the box is ticked.
+      There is no approval queue in this system — nothing pauses to ask you before an agent acts.</p>`;
+  }
+
   function renderAgentsCatalog(ws) {
     const { agents, recommended } = state.agents;
     const recSet = new Set(recommended);
     const groups = {};
     for (const a of agents) { (groups[a.group] = groups[a.group] || []).push(a); }
     return `<p class="section-title">Agent catalog — recommended for “${esc(stageLabel(ws.stage))}” are highlighted</p>
+      ${permissionsPreamble()}
       ${Object.entries(groups).map(([group, list]) => `
         <div class="fo-agent-group">
           <p class="fo-group-title">${esc(group)}</p>
           <div class="fo-agent-grid">
             ${list.map((a) => {
               const enabled = a.settings ? a.settings.enabled : false;
+              const open = state.openPermissions === a.id;
               return `<div class="fo-agent ${recSet.has(a.id) ? 'recommended' : ''}">
                 <div class="fo-agent-top"><span class="fo-agent-name">${esc(a.name)}</span>${recSet.has(a.id) ? pill('Recommended', 'fo-pill-rec') : ''}</div>
                 <div class="fo-agent-purpose">${esc(a.purpose)}</div>
                 <label class="fo-toggle"><input type="checkbox" data-fo-agent="${attr(a.id)}" ${enabled ? 'checked' : ''}/> Enabled in this workspace</label>
+                <button class="fo-perm-toggle" data-fo-perms="${attr(a.id)}" aria-expanded="${open}" aria-controls="fo-perms-${attr(a.id)}">
+                  ${open ? 'Hide' : 'Review'} permissions (${(state.catalog.capabilities || []).length})
+                </button>
+                <div id="fo-perms-${attr(a.id)}" ${open ? '' : 'hidden'}>
+                  ${open ? permissionRows(a.id, a.effectivePermissions) : ''}
+                </div>
               </div>`;
             }).join('')}
           </div>
@@ -524,10 +576,14 @@
   // =========================================================================
   function wireDelegation() {
     document.addEventListener('click', async (e) => {
-      const t = e.target.closest('[data-fo],[data-fo-tab],[data-fo-add],[data-fo-edit],[data-fo-del]');
+      const t = e.target.closest('[data-fo],[data-fo-tab],[data-fo-add],[data-fo-edit],[data-fo-del],[data-fo-perms]');
       if (!t) return;
       try {
-        if (t.dataset.fo === 'new-workspace') { openWorkspaceDialog(); }
+        if (t.dataset.foPerms) {
+          state.openPermissions = state.openPermissions === t.dataset.foPerms ? null : t.dataset.foPerms;
+          renderBusiness();
+        }
+        else if (t.dataset.fo === 'new-workspace') { openWorkspaceDialog(); }
         else if (t.dataset.fo === 'reopen-onboarding') { await api('/api/onboarding/start', { method: 'POST' }); state.onboarding = await api('/api/onboarding'); openOnboarding(); }
         else if (t.dataset.foTab) { state.businessTab = t.dataset.foTab; renderBusiness(); }
         else if (t.dataset.foAdd) { openRecordDialog(t.dataset.foAdd); }
@@ -555,6 +611,17 @@
         } else if (el.dataset.foAgent) {
           await api(`/api/workspaces/${state.activeWorkspaceId}/agents/${el.dataset.foAgent}`, { method: 'PUT', body: JSON.stringify({ enabled: el.checked }) });
           await loadActiveWorkspaceDetail();
+        } else if (el.dataset.foPerm) {
+          // Send the WHOLE resolved map, not just the changed key. The store
+          // normalizes a partial map by filling missing keys from the
+          // least-authority default, so posting one key would silently reset
+          // every other capability on that agent.
+          const agentId = el.dataset.agent;
+          const agent = (state.agents.agents || []).find((a) => a.id === agentId);
+          const next = { ...(agent ? agent.effectivePermissions : {}), [el.dataset.foPerm]: el.checked };
+          await api(`/api/workspaces/${state.activeWorkspaceId}/agents/${agentId}`, { method: 'PUT', body: JSON.stringify({ permissions: next }) });
+          await loadActiveWorkspaceDetail();
+          renderBusiness();
         } else if (el.dataset.foStatus) {
           // decisions, tasks and experiments all expose their lifecycle this
           // way; the route is derived from the type rather than hard-coded.
@@ -822,11 +889,33 @@
           <ul class="attention-list">${(recs.length ? recs : state.catalog.agents.slice(0, 4)).map((a) => `<li class="attention-item"><div class="body"><div class="title">${esc(a.name)}</div><div class="meta">${esc(a.purpose)}</div></div></li>`).join('')}</ul>
           ${wizardNav('workspace', 'permissions', 'Continue')}`;
       }
-      case 'permissions':
+      case 'permissions': {
+        // This step used to be two paragraphs and a Continue button, and one
+        // of those paragraphs told the operator that consequential actions
+        // "require your approval" — no approval mechanism exists. Every
+        // capability is now listed here, read-only, with its real
+        // classification, so "review permissions" describes what happens.
+        const caps = state.catalog.capabilities || [];
+        const defaults = (c) => !c.consequential;
         return `<h3>Agent permissions</h3>
-          <p class="fo-hint">Agents start with the least authority that lets them work. Consequential actions — spending money, making paid model calls, contacting people, running commands — are <strong>off by default</strong> and require your approval. You can grant more per agent later.</p>
-          <p class="fo-hint fo-note">Note: in this version most permissions are recorded preferences that the interface shows and future versions will enforce. Spending and paid-model-call limits are already enforced by the budget system.</p>
+          <p class="fo-hint">These are the ${caps.length} capabilities an agent can be given. Agents start with the least authority that lets them work: everything consequential starts off.</p>
+          ${permissionsPreamble()}
+          <div class="fo-perms fo-perms-review">${caps.map((c) => `
+            <div class="fo-perm">
+              <div class="fo-perm-main">
+                <span class="fo-perm-state ${defaults(c) ? 'on' : 'off'}">${defaults(c) ? 'on' : 'off'}</span>
+                <span class="fo-perm-label">${esc(c.label)}</span>
+              </div>
+              <div class="fo-perm-meta">
+                ${capabilityBadge(c)}
+                ${c.enforcementPoint
+                  ? `<span class="fo-perm-where">Always-on control: ${esc(c.enforcementPoint)}.</span>`
+                  : '<span class="fo-perm-where">Nothing in the runtime reads this value.</span>'}
+              </div>
+            </div>`).join('')}</div>
+          <p class="fo-hint">You can change any of these per agent, per workspace, in Business &rarr; Agents &rarr; Review permissions.</p>
           ${wizardNav('agents', 'yc', 'Continue')}`;
+      }
       case 'yc':
         return `<h3>Y Combinator</h3>
           <p class="fo-hint">Is this workspace preparing for YC? You can track a preparation checklist and see a transparent readiness score (not an acceptance prediction).</p>

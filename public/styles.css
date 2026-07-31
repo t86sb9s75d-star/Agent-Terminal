@@ -1047,6 +1047,32 @@ button { font-family: inherit; font-size: inherit; color: inherit; }
 }
 .fo-inline-select { background: var(--bg-inset); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 3px 8px; font: inherit; }
 
+/* Permission review. A plain list, not a control panel: the visual weight is
+   on the classification text, because that is the part an operator can be
+   wrong about. No green/red status colouring — "recorded only" is not a
+   failure state, and colour alone must never carry the meaning. */
+.fo-perm-toggle {
+  margin-top: 10px; background: none; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--text-muted); cursor: pointer; font: inherit; font-size: var(--text-small); padding: 4px 10px; width: 100%;
+}
+.fo-perm-toggle:hover { color: var(--text); border-color: var(--border-strong, var(--border)); }
+.fo-perms { margin-top: 10px; display: grid; gap: 10px; }
+.fo-perm { border-top: 1px solid var(--border); padding-top: 8px; }
+.fo-perm:first-child { border-top: none; padding-top: 0; }
+.fo-perm-main { display: flex; align-items: center; gap: 8px; }
+.fo-perm-label { font-size: var(--text-small); color: var(--text); }
+.fo-perm-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-top: 4px; padding-left: 22px; }
+.fo-perm-where { font-size: var(--text-small); color: var(--text-faint); overflow-wrap: anywhere; }
+/* Text, not colour, states the default — readable without colour vision. */
+.fo-perm-state {
+  font-size: var(--text-small); text-transform: uppercase; letter-spacing: var(--tracking-wide);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 1px 6px; min-width: 34px; text-align: center;
+}
+.fo-perm-state.on { color: var(--text); }
+.fo-perm-state.off { color: var(--text-faint); }
+.fo-perms-review { max-height: 320px; overflow-y: auto; }
+@media (max-width: 640px) { .fo-perm-meta { padding-left: 0; } }
+
 .fo-agent-group { margin-bottom: 20px; }
 .fo-group-title { font-size: var(--text-small); text-transform: uppercase; letter-spacing: var(--tracking-wide); color: var(--text-faint); margin-bottom: 8px; }
 .fo-agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }

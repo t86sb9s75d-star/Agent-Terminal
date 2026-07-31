@@ -12,34 +12,78 @@
 // truth for that distinction, and the UI/docs must read it rather than
 // assuming.
 
-// enforcement values:
-//   'enforced'   — a real code path checks this before the action happens.
-//   'preference' — stored and displayed, but nothing consults it yet. The UI
-//                  must label these as "planned", never "blocked"/"protected".
+// THE MOST IMPORTANT FACT ON THIS SCREEN, established by reading every call
+// site rather than by assuming: NO stored permission value on any agent, in
+// any workspace, is consulted by the runtime today. Not one of the thirteen.
 //
-// consequential: actions that should default to requiring approval because
-// they spend money, touch the outside world, or are hard to undo. This drives
-// the conservative default in defaultPermissionsFor().
+// That is stronger than the earlier framing of "three are enforced". What is
+// true is that three capabilities have a RELATED SYSTEM-LEVEL CONTROL which
+// runs regardless of this setting:
+//
+//   budget.assertWithinBudget() is called unconditionally before every run
+//   (src/agentManager.js) and reads the configured daily caps — it never
+//   looks at spend_money or paid_model_calls for this agent or workspace.
+//
+//   src/workers/custom.js applies its trusted-operator boundary and
+//   minimalEnv() to every custom run — it never looks at use_custom_provider.
+//
+// So turning any of the thirteen off changes what is RECORDED, and nothing
+// else, for all thirteen. Saying "three are enforced" invites the operator to
+// believe those three toggles do something. They do not.
+//
+// enforcement values — read by the UI and the docs, never restated by them:
+//   'system_control' — a real, always-on control governs this action. Named
+//                      in enforcementPoint. It is NOT gated on this setting.
+//   'recorded_only'  — nothing anywhere consults it.
+//
+// gatedByStoredValue is deliberately present, deliberately false everywhere,
+// and deliberately per-capability: the day a real gate is written for one
+// capability, this flips for that one alone and the UI changes with it.
+//
+// consequential: actions that spend money, touch the outside world, or are
+// hard to undo. It drives the least-authority default below. It does NOT mean
+// "approval-gated" — no approval mechanism exists anywhere in this system.
 const CAPABILITIES = [
-  { key: 'read_workspace_data', label: 'Read workspace data', consequential: false, enforcement: 'preference' },
-  { key: 'write_workspace_data', label: 'Write workspace data', consequential: false, enforcement: 'preference' },
-  { key: 'create_tasks', label: 'Create tasks', consequential: false, enforcement: 'preference' },
-  { key: 'modify_tasks', label: 'Modify tasks', consequential: false, enforcement: 'preference' },
-  { key: 'read_files', label: 'Read files', consequential: false, enforcement: 'preference' },
-  { key: 'edit_files', label: 'Edit files', consequential: true, enforcement: 'preference' },
-  { key: 'run_commands', label: 'Run commands', consequential: true, enforcement: 'preference' },
-  // The custom-provider trust boundary and the budget caps ARE real code
-  // paths today (workers/custom.js + budget.js). These two are the honest
-  // 'enforced' entries: an agent's run is actually gated on the spending caps
-  // before a paid provider is contacted, and custom commands actually execute
-  // through the documented trusted-operator boundary.
-  { key: 'use_custom_provider', label: 'Use custom (shell) provider', consequential: true, enforcement: 'enforced' },
-  { key: 'access_network', label: 'Access network services', consequential: true, enforcement: 'preference' },
-  { key: 'contact_people', label: 'Contact external people', consequential: true, enforcement: 'preference' },
-  { key: 'spend_money', label: 'Spend money', consequential: true, enforcement: 'enforced' },
-  { key: 'paid_model_calls', label: 'Make paid model calls', consequential: true, enforcement: 'enforced' },
-  { key: 'act_without_approval', label: 'Act without approval', consequential: true, enforcement: 'preference' },
+  { key: 'read_workspace_data', label: 'Read workspace data', consequential: false, enforcement: 'recorded_only', enforcementPoint: null, gatedByStoredValue: false },
+  { key: 'write_workspace_data', label: 'Write workspace data', consequential: false, enforcement: 'recorded_only', enforcementPoint: null, gatedByStoredValue: false },
+  { key: 'create_tasks', label: 'Create tasks', consequential: false, enforcement: 'recorded_only', enforcementPoint: null, gatedByStoredValue: false },
+  { key: 'modify_tasks', label: 'Modify tasks', consequential: false, enforcement: 'recorded_only', enforcementPoint: null, gatedByStoredValue: false },
+  { key: 'read_files', label: 'Read files', consequential: false, enforcement: 'recorded_only', enforcementPoint: null, gatedByStoredValue: false },
+  { key: 'edit_files', label: 'Edit files', consequential: true, enforcement: 'recorded_only', enforcementPoint: null, gatedByStoredValue: false },
+  { key: 'run_commands', label: 'Run commands', consequential: true, enforcement: 'recorded_only', enforcementPoint: null, gatedByStoredValue: false },
+  {
+    key: 'use_custom_provider',
+    label: 'Use custom (shell) provider',
+    consequential: true,
+    enforcement: 'system_control',
+    enforcementPoint: 'src/workers/custom.js — trusted-operator boundary and minimalEnv(), applied to every custom run',
+    gatedByStoredValue: false,
+  },
+  { key: 'access_network', label: 'Access network services', consequential: true, enforcement: 'recorded_only', enforcementPoint: null, gatedByStoredValue: false },
+  { key: 'contact_people', label: 'Contact external people', consequential: true, enforcement: 'recorded_only', enforcementPoint: null, gatedByStoredValue: false },
+  {
+    key: 'spend_money',
+    label: 'Spend money',
+    consequential: true,
+    enforcement: 'system_control',
+    enforcementPoint: 'src/budget.js — daily spending caps, checked before every paid run',
+    gatedByStoredValue: false,
+  },
+  {
+    key: 'paid_model_calls',
+    label: 'Make paid model calls',
+    consequential: true,
+    enforcement: 'system_control',
+    enforcementPoint: 'src/budget.js — daily spending caps, checked before every paid run',
+    gatedByStoredValue: false,
+  },
+  { key: 'act_without_approval', label: 'Act without approval', consequential: true, enforcement: 'recorded_only', enforcementPoint: null, gatedByStoredValue: false },
 ];
+
+// One sentence the UI and docs both render verbatim, so the claim cannot
+// drift between them. If a real gate is ever written, this must change with it.
+const RUNTIME_ENFORCEMENT_SUMMARY =
+  'No setting on this screen is consulted by the runtime. Changing one changes what is recorded, not what an agent can do.';
 
 const CAPABILITY_KEYS = CAPABILITIES.map((c) => c.key);
 const CONSEQUENTIAL_KEYS = CAPABILITIES.filter((c) => c.consequential).map((c) => c.key);
@@ -80,11 +124,15 @@ function normalizePermissions(input) {
   return out;
 }
 
-// Whether a capability, if granted, would still require per-action approval
-// under the conservative model. Consequential capabilities are "grantable but
-// approval-gated by default"; this is what the UI uses to show the right
-// warning, and what a future enforcement layer will consult.
-function requiresApproval(key) {
+// requiresApproval() used to live here. It returned CONSEQUENTIAL_KEYS
+// membership under a name asserting an approval workflow, and its comment
+// claimed "this is what the UI uses to show the right warning". Neither was
+// true: it had no caller outside its own test, and no approval mechanism
+// exists anywhere in this system. Removed rather than renamed — the concept
+// itself is the thing that was misleading. Callers that want the underlying
+// fact should read `consequential`, which only claims what it means.
+
+function isConsequential(key) {
   return CONSEQUENTIAL_KEYS.includes(key);
 }
 
@@ -92,8 +140,9 @@ module.exports = {
   CAPABILITIES,
   CAPABILITY_KEYS,
   CONSEQUENTIAL_KEYS,
+  RUNTIME_ENFORCEMENT_SUMMARY,
   isValidCapability,
   defaultPermissionsFor,
   normalizePermissions,
-  requiresApproval,
+  isConsequential,
 };
