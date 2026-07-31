@@ -43,6 +43,7 @@ Severity is about consequence to the operator, not effort to fix.
 | R-012 | this pass | Low | dead code | fixed | dead export crashed the server; syntax check did not catch it |
 | R-013 | this pass | Medium | test quality | fixed | my own permission test passed against a broken client |
 | R-014 | this pass | Low | observability | documented | Sentinel findings still grow one per request per tampered store |
+| R-015 | this pass | Medium | data contract | fixed | my own date validator accepted 2026-02-31 while claiming to reject it |
 
 ---
 
@@ -537,6 +538,47 @@ Severity is about consequence to the operator, not effort to fix.
   page loads accumulates duplicate `critical` findings and an growing event
   log. Both are recoverable by performing the recovery the finding asks for.
 - **Named in**: `docs/FEATURE_ONBOARD.md` Known limitations.
+
+## R-015 — The date validator accepted impossible dates while claiming not to
+
+- **Phase**: this pass (found in live-runtime verification) · **Severity**: Medium · **Category**: data contract · **Status**: fixed
+- **Files**: `src/errors.js`, `test/workspaceStores.test.js`
+- **Symptom**: `POST /api/workspaces/:id/goals` with `targetDate: "2026-02-31"`
+  returned **201**. The validator's own comment, the commit message that
+  introduced it, and `FEATURE_ONBOARD.md` all said impossible calendar dates
+  were rejected.
+- **Reproduction**: against a real server —
+  ```
+  {"evil":true}    -> 400
+  [1,2]            -> 400
+  "garbage 2024"   -> 400
+  "2026-02-31"     -> 201   <- should have been 400
+  ```
+- **Root cause**: `Date.parse` does not reject impossible ISO dates, it
+  **rolls them over**. `2026-02-31` → March 3, `2026-04-31` → May 1,
+  `2026-02-29` in a non-leap year → March 1. A shape check plus a parse check
+  therefore accepts the string and stores a value meaning a *different day*
+  than the one written. This is the second distinct way `Date.parse` is the
+  wrong tool for this job, after the too-permissive-shape problem R-007 fixed.
+- **Why the R-007 tests missed it**: they tried `2026-13-45`, where the *month*
+  is out of range, so `Date.parse` genuinely fails. Every invalid case in that
+  set failed for a reason other than the day-of-month rollover. The test suite
+  proved the validator rejected malformed strings; it never proved the
+  validator understood the calendar.
+- **Fix**: a round-trip check — build the date in UTC from the captured Y/M/D
+  and require `getUTCFullYear/Month/Date` to come back unchanged. A rollover
+  changes the day or the month, so this catches every impossible date without
+  maintaining a leap-year table.
+- **Regression coverage**: `2026-02-31`, `2026-04-31`, `2026-06-31` and
+  `2026-02-29` added to the rejection table; `2024-02-29` (a real leap day) and
+  `2026-12-31` added to the acceptance table, so the fix cannot be satisfied by
+  rejecting unusual-but-valid dates.
+- **Same-pattern search**: all three date fields share one validator, so one
+  fix covers them. No other field parses a date string.
+- **How it was found**: not by any test — by driving the real API from a fresh
+  clone during the final verification pass and reading the status codes against
+  what the documentation claimed. This is the case for keeping a live-runtime
+  step even when the suite is green.
 
 ---
 

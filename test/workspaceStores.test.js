@@ -243,6 +243,13 @@ check('every optional-date field rejects objects, arrays and malformed strings',
   // Non-strings must be rejected, not stringified. An object previously
   // survived into storage and rendered to the operator as "[object Object]".
   const rejected = [{ evil: true }, [1, 2, 3], 'not-a-date', '2026-13-45', 123, true];
+  // Impossible calendar dates that Date.parse ACCEPTS by rolling them over:
+  // 2026-02-31 -> Mar 3, 2026-04-31 -> May 1, 2026-02-29 -> Mar 1 (not a leap
+  // year). A shape check plus Date.parse stores a string meaning a different
+  // day than the one written. Caught in live-runtime verification, not by the
+  // original version of this test — which only tried 2026-13-45, where the
+  // month itself is out of range and parse genuinely fails.
+  rejected.push('2026-02-31', '2026-04-31', '2026-02-29', '2026-06-31');
   for (const [label, write] of DATE_FIELDS) {
     for (const bad of rejected) {
       assert.throws(
@@ -269,6 +276,10 @@ check('every optional-date field rejects ambiguous coercions Date.parse would ac
 check('every optional-date field accepts ISO dates and an explicit clear', () => {
   for (const [label, write, read] of DATE_FIELDS) {
     assert.doesNotThrow(() => write('2026-07-31'), `${label} must accept an ISO date`);
+    // A real leap day must still be accepted — the rollover check must reject
+    // impossible dates without rejecting unusual valid ones.
+    assert.doesNotThrow(() => write('2024-02-29'), `${label} must accept a real leap day`);
+    assert.doesNotThrow(() => write('2026-12-31'), `${label} must accept the last day of a month`);
     assert.doesNotThrow(() => write('2026-07-31T12:00:00Z'), `${label} must accept an ISO date-time`);
     // null and '' are the two ways the API/UI express "clear this field".
     assert.doesNotThrow(() => write(null), `${label} must accept null as a clear`);
