@@ -283,7 +283,12 @@
     </select>`;
   }
 
+  // These mirror the vocabularies in src/workspaceRecordsStore.js. They are
+  // restated here only because the browser has no import of that module; the
+  // server rejects any value outside its own list, so a drift here surfaces as
+  // a VALIDATION_ERROR rather than as silently-accepted bad data.
   const TASK_STATUSES = ['todo', 'in_progress', 'done', 'cancelled'];
+  const DECISION_STATUSES = ['proposed', 'accepted', 'rejected', 'reversed', 'superseded'];
   function renderTasks(ws) {
     const rows = state.records.tasks || [];
     const goals = state.records.goals || [];
@@ -347,9 +352,7 @@
           <div class="fo-record-main"><span class="fo-record-title">${esc(d.decision)}</span> ${pill(d.status, 'fo-pill-status')}</div>
           ${d.reasoning ? `<div class="fo-record-sub">${esc(d.reasoning)}</div>` : ''}
           <div class="fo-record-foot">
-            <select class="fo-inline-select" data-fo-status="decision" data-id="${attr(d.id)}" aria-label="Decision status">
-              ${['proposed', 'accepted', 'rejected', 'reversed', 'superseded'].map((s) => `<option value="${attr(s)}" ${s === d.status ? 'selected' : ''}>${esc(s)}</option>`).join('')}
-            </select>
+            ${statusSelect('decision', d.id, d.status, DECISION_STATUSES, `Status for decision ${d.decision}`)}
           </div>
         </div>`).join('')}</div>`}`;
   }

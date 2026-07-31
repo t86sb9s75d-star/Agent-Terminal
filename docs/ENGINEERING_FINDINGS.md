@@ -44,6 +44,7 @@ Severity is about consequence to the operator, not effort to fix.
 | R-013 | this pass | Medium | test quality | fixed | my own permission test passed against a broken client |
 | R-014 | this pass | Low | observability | documented | Sentinel findings still grow one per request per tampered store |
 | R-015 | this pass | Medium | data contract | fixed | my own date validator accepted 2026-02-31 while claiming to reject it |
+| R-016 | this pass | Low | test quality | fixed | my own route contract passed a route with no affordance |
 
 ---
 
@@ -579,6 +580,45 @@ Severity is about consequence to the operator, not effort to fix.
   clone during the final verification pass and reading the status codes against
   what the documentation claimed. This is the case for keeping a live-runtime
   step even when the suite is green.
+
+## R-016 — The route-to-affordance contract passed a route with no affordance
+
+- **Phase**: this pass (final adversarial review of my own diff) · **Severity**: Low · **Category**: test quality · **Status**: fixed
+- **Files**: `test/routeCoverage.test.js`, `public/onboard.js`, `docs/FEATURE_ONBOARD.md`
+- **Symptom**: `DELETE /api/workspaces/:workspaceId/decisions/:id` was
+  classified as operator-reachable and the contract passed. Nothing in the UI
+  renders a delete control for decisions.
+- **Reproduction**: `grep -c 'data-fo-del="decision"' public/onboard.js` → 0,
+  while the route was marked `ui` and the test was green.
+- **Root cause**: the contract looked for the string `pluralOf(type)` — the
+  SHARED delegated handler that builds the path for all six record types. That
+  string is present as soon as any one type renders any one control, so it
+  marked all 24 mutation routes reachable on the strength of a single
+  affordance existing somewhere. A contract written to catch coarse claims was
+  itself making a coarse claim.
+- **Fix**: mutation routes are now checked against the PER-TYPE marker each
+  renderer emits (`data-fo-del="task"`, `data-fo-edit="goal"`,
+  `statusSelect('decision'`), with an `anyOf` for affordances that can
+  legitimately take more than one shape. List and create remain proven by the
+  browser reachability contract, which drives the real dialog — a stronger
+  check than a substring — and the two tests now cross-reference each other so
+  neither is assumed to cover the other's ground.
+- **Second defect the fix exposed**: decisions rendered their status `<select>`
+  inline with a duplicated copy of the status vocabulary rather than through
+  the shared `statusSelect()` helper. Unified.
+- **Product decision recorded, not silently absent**: decisions deliberately
+  have no delete control, because deleting one destroys the revision trail the
+  immutability rule exists to preserve. That is now an `api_only`
+  classification with a written reason and a row in the docs, rather than an
+  unexplained gap.
+- **Fail-without proof**: removing `data-fo-del="task"` →
+  `DELETE /api/workspaces/:workspaceId/tasks/:id (expected public/onboard.js to
+  contain one of ["data-fo-del=\"task\""])`. The coarse version passed that
+  same mutation.
+- **Why it is in the record**: the third time in this branch that a test
+  written to catch a class of defect contained that defect (after F-003 and
+  R-013). The common thread is that writing the test is not the check —
+  running the mutation is.
 
 ---
 

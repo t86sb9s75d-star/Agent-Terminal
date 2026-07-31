@@ -270,6 +270,7 @@ A route existing is not the same as a capability being delivered. These are
 |---|---|
 | `GET /api/workspaces/:workspaceId` | the UI always works from the decorated list, so a single-workspace read has no surface |
 | `GET /api/workspaces/:workspaceId/{type}/:id` | records are rendered from the list response; a single-record read has no surface |
+| `DELETE /api/workspaces/:workspaceId/decisions/:id` | a decision's text and reasoning are immutable so the revision trail survives. A delete button would let the interface destroy exactly the history that rule exists to preserve, so decisions are the one record type with no delete control. The route remains for an operator who has deliberately decided otherwise. |
 
 Everything else under `/api` that Feature Onboard registers **is** reachable
 through the interface, and that is enforced rather than asserted:

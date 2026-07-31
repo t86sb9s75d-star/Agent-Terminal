@@ -75,13 +75,54 @@ const ROUTES = {
   'PUT /api/workspaces/:workspaceId/yc': { kind: 'ui', calls: '/yc`' },
 };
 
-// The six record types share one generated route family; listing all 24 by
-// hand would be the drifting hard-coded list this file exists to prevent.
-for (const segment of ['goals', 'tasks', 'decisions', 'assumptions', 'experiments', 'evidence']) {
-  ROUTES[`GET /api/workspaces/:workspaceId/${segment}`] = { kind: 'ui', calls: `/${segment}\`` };
-  ROUTES[`POST /api/workspaces/:workspaceId/${segment}`] = { kind: 'ui', calls: 'pluralOf(type)' };
-  ROUTES[`PUT /api/workspaces/:workspaceId/${segment}/:id`] = { kind: 'ui', calls: 'pluralOf(type)' };
-  ROUTES[`DELETE /api/workspaces/:workspaceId/${segment}/:id`] = { kind: 'ui', calls: 'pluralOf(type)' };
+// The six record types share one generated route family. The mutation routes
+// are driven by ONE delegated handler that builds its path from pluralOf(type),
+// so checking for that shared string would mark all 24 routes reachable the
+// moment any single type rendered any single control — which is exactly how
+// `DELETE .../decisions/:id` passed an earlier version of this test while
+// nothing in the UI rendered a delete control for decisions.
+//
+// So the mutation routes are checked against the PER-TYPE marker each renderer
+// actually emits, not against the shared handler.
+const RECORD_TYPES = {
+  goals: 'goal',
+  tasks: 'task',
+  decisions: 'decision',
+  assumptions: 'assumption',
+  experiments: 'experiment',
+  evidence: 'evidence',
+};
+
+for (const [segment, type] of Object.entries(RECORD_TYPES)) {
+  // List and create are driven from templated markup (RECORD_TABS,
+  // recordListHeader), so there is no literal per-type string to grep for.
+  // They are proven instead by the browser reachability contract, which
+  // creates every type through the real dialog against a real server —
+  // a stronger check than a substring. Cross-referenced so neither test is
+  // assumed to cover the other's ground.
+  ROUTES[`GET /api/workspaces/:workspaceId/${segment}`] = {
+    kind: 'ui',
+    calls: `/${segment}\``,
+  };
+  ROUTES[`POST /api/workspaces/:workspaceId/${segment}`] = {
+    kind: 'ui',
+    calls: `/${segment}\``, // the list fetch proves the segment is wired; creation is proven in the browser contract
+  };
+
+  // Update: either an edit dialog or an inline status control counts.
+  ROUTES[`PUT /api/workspaces/:workspaceId/${segment}/:id`] = {
+    kind: 'ui',
+    anyOf: [`data-fo-edit="${type}"`, `statusSelect('${type}'`],
+  };
+
+  // Delete: decisions are the deliberate exception.
+  ROUTES[`DELETE /api/workspaces/:workspaceId/${segment}/:id`] = segment === 'decisions'
+    ? {
+      kind: 'api_only',
+      why: 'a decision\'s text and reasoning are immutable so the revision trail survives; offering a delete button would let the UI destroy the very history that rule exists to preserve. The route stays for an operator who has decided otherwise, deliberately without a control.',
+    }
+    : { kind: 'ui', anyOf: [`data-fo-del="${type}"`] };
+
   ROUTES[`GET /api/workspaces/:workspaceId/${segment}/:id`] = {
     kind: 'api_only',
     why: 'the UI renders records from the list response; a single-record read has no surface',
@@ -115,8 +156,15 @@ check('every route claimed as operator-reachable has a real call site in the UI'
   const missing = [];
   for (const [route, meta] of Object.entries(ROUTES)) {
     if (meta.kind !== 'ui') continue;
-    assert.ok(meta.calls, `${route} is classified 'ui' but declares no call site to look for`);
-    if (!FRONTEND.includes(meta.calls)) missing.push(`${route}  (expected public/onboard.js to contain ${JSON.stringify(meta.calls)})`);
+    assert.ok(meta.calls || meta.anyOf, `${route} is classified 'ui' but declares no call site to look for`);
+    // `anyOf` exists because one affordance can legitimately take several
+    // shapes (an edit dialog OR an inline status control). It must still be a
+    // PER-TYPE marker — a shared handler string would mark every type reachable
+    // as soon as one of them rendered anything.
+    const candidates = meta.anyOf || [meta.calls];
+    if (!candidates.some((c) => FRONTEND.includes(c))) {
+      missing.push(`${route}  (expected public/onboard.js to contain one of ${JSON.stringify(candidates)})`);
+    }
   }
   assert.deepStrictEqual(missing, [], `routes claimed as operator-reachable with no call site:\n  ${missing.join('\n  ')}`);
 });
