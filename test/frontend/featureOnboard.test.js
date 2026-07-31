@@ -285,14 +285,26 @@ async function run() {
     await page.waitForSelector('#fo-workspace');
     await page.click('[data-fo-tab="goals"]');
 
+    // Latch the response for the load that selecting A is about to start.
+    // Registered HERE, not earlier: opening the Business view already fetched
+    // A's goals once, so a waiter registered before that would resolve on the
+    // wrong response and the assertions below would run ~1.2s too early and
+    // pass vacuously. (Verified: the first version of this test did exactly
+    // that and survived the mutation it was written to catch.)
+    const abandonedLoadLanded = page.waitForResponse(
+      (r) => r.url().includes(`/api/workspaces/${a.id}/goals`),
+      { timeout: 30000 }
+    );
     await page.selectOption('#fo-workspace', a.id);
     await page.waitForTimeout(100);       // A's load is in flight and will hang
     await page.selectOption('#fo-workspace', b.id);
 
     // B's data must arrive...
     await expectText(page, '#fo-business-panel', 'BETA-SECRET', 'the newly selected workspace must render');
-    // ...and A's abandoned load must never overwrite it when it finally lands.
-    await page.waitForTimeout(2500);
+    // ...and A's abandoned load must never overwrite it once it has ACTUALLY
+    // landed. Proven landed, not assumed landed.
+    await abandonedLoadLanded;
+    await page.waitForTimeout(400); // let the resolved handler assign and re-render
     assert.strictEqual(await page.$eval('#fo-workspace', (el) => el.value), b.id, 'the selector must still read Beta');
     await expectNoText(page, '#fo-business-panel', 'ALPHA-SECRET',
       'a superseded load must never paint another workspace\'s records over the current one');
