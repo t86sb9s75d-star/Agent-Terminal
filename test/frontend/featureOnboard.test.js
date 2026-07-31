@@ -136,15 +136,32 @@ async function run() {
   });
 
   await check('[smoke] onboarding can be skipped and does not reappear on reload', async ({ page, base }) => {
+    // This case failed once under load and passed on retry. It was a real
+    // race, not noise: it slept 300ms and then asserted the wizard was gone,
+    // while the skip handler awaits POST /api/onboarding/complete first. Under
+    // contention that POST outlasts the sleep.
+    //
+    // The reload half was worse — it slept 400ms and asserted the wizard was
+    // ABSENT, so a slow boot passes the test by not having rendered yet. That
+    // is a false pass on the assertion that matters, which is exactly the
+    // shape of a test that cannot fail.
+    //
+    // Both now wait for a condition. The reload waits for a positive signal
+    // that the app has finished booting before asserting the absence.
     await page.goto(base, { waitUntil: 'networkidle' });
     await page.waitForSelector('.fo-wizard');
     await page.click('[data-wz="skip"]');
-    await page.waitForTimeout(300);
-    assert.ok(!(await page.isVisible('.fo-wizard')), 'wizard should close on skip');
+    // closeOnboarding() hides the overlay rather than removing it, so the
+    // condition is 'hidden', not 'detached'. Asserting the wrong mechanism is
+    // how a wait becomes a sleep with extra steps.
+    await page.waitForSelector('.fo-wizard', { state: 'hidden', timeout: 10000 });
+
     await page.reload({ waitUntil: 'networkidle' });
-    await page.waitForTimeout(400);
-    const wiz = await page.$('.fo-wizard');
-    assert.ok(!wiz || !(await page.isVisible('.fo-wizard')), 'skipped onboarding must not reappear');
+    // Positive proof the app booted: the nav rail is wired and the Business
+    // view renders. Only then does "no wizard" mean anything.
+    await page.click('.rail-item[data-view="business"]');
+    await page.waitForSelector('#view-business .view-heading', { timeout: 10000 });
+    assert.ok(!(await page.isVisible('.fo-wizard')), 'skipped onboarding must not reappear');
   });
 
   await check('[regression] partial onboarding persists and resumes after reload', async ({ page, base }) => {
@@ -873,7 +890,9 @@ async function run() {
     const role = await page.getAttribute('.modal-overlay[role="dialog"]', 'aria-modal');
     assert.strictEqual(role, 'true', 'dialog must set aria-modal');
     await page.keyboard.press('Escape');
-    await page.waitForTimeout(300);
+    // Wait for the condition, not a duration. The modal is proven present
+    // above, so this cannot pass by the dialog never having opened.
+    await page.waitForSelector('.fo-modal', { state: 'detached', timeout: 10000 });
     assert.strictEqual(await page.$('.fo-modal'), null, 'Escape must close the dialog');
   });
 
