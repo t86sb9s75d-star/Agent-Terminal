@@ -113,6 +113,16 @@ not just the current state.
 - A direct file tamper on `agents.json` produced a
   `store_integrity_failure` finding and flipped `/api/security/status`
   to unhealthy.
+- Every operator transition (`acknowledge`, `contain`, `resolve`) now also
+  writes a `sentinel.finding_<status>` entry to the append-only, hash-chained
+  audit log, not only to the finding's own `statusHistory`. That distinction
+  matters: `statusHistory` lives in `security_events.json`, a snapshot store
+  rewritten in full on every write, while `events.jsonl` is the tamper-evident
+  one. Until this was fixed the entire operator lifecycle was invisible to the
+  audit trail — including containment, which can stop a running agent. The stop
+  was audited; the decision to contain was not. See A-009 in
+  `docs/ENGINEERING_FINDINGS.md`; enforced by an integration contract that
+  drives every mutating route and diffs the log.
 - The full `acknowledge → contain → resolve` lifecycle, including
   `stopAgent: true` actually stopping a currently-running implicated
   agent (confirmed via the agent's status flipping to `idle`), verified

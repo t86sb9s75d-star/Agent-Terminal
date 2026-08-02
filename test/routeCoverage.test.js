@@ -183,6 +183,36 @@ check('every deliberately API-only route gives a reason and is disclosed in the 
   );
 });
 
+// ---- CLASS: duplicated vocabularies drifting apart ----
+//
+// public/onboard.js restates three status vocabularies because the browser
+// cannot import the store module. Drift is only HALF detected at runtime: a
+// frontend value the backend rejects surfaces as a VALIDATION_ERROR, but a
+// value the backend gains and the frontend lacks is silent — the operator
+// simply cannot select it, and nothing fails.
+//
+// This is the same shape as the defects that produced F-005 (two required-field
+// implementations), R-007 (two date contracts) and R-003 (docs vs code): one
+// concept, two definitions, nothing comparing them.
+const RESTATED_VOCABULARIES = ['TASK_STATUSES', 'DECISION_STATUSES', 'EXPERIMENT_STATUSES'];
+
+check('every status vocabulary restated in the frontend matches the backend exactly', () => {
+  const backend = require('../src/workspaceRecordsStore');
+  for (const name of RESTATED_VOCABULARIES) {
+    assert.ok(Array.isArray(backend[name]), `${name} must be exported by workspaceRecordsStore`);
+
+    const m = new RegExp(`const ${name} = \\[([^\\]]*)\\]`).exec(FRONTEND);
+    assert.ok(m, `${name} is exported by the backend but no longer restated in public/onboard.js — either restore it or drop it from RESTATED_VOCABULARIES`);
+    const frontend = m[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+
+    assert.deepStrictEqual(
+      frontend, backend[name],
+      `${name} has drifted.\n  backend:  ${JSON.stringify(backend[name])}\n  frontend: ${JSON.stringify(frontend)}\n`
+      + '  A value the backend gained and the frontend lacks is invisible at runtime: the operator just cannot select it.'
+    );
+  }
+});
+
 check('no route family is silently unbalanced', () => {
   // Every record segment must expose the same five routes. A segment missing
   // one means either a real gap or a stale classification.

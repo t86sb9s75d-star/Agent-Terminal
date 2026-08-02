@@ -1142,6 +1142,104 @@ async function run() {
     }
   });
 
+  // ---- CLASS: audit bypass ----
+  //
+  // Hypothesis: every state-changing route writes at least one entry to the
+  // append-only, hash-chained audit log. Not "has an audit() call in its
+  // source" — a static scan of that gave a FALSE POSITIVE here (it read past a
+  // route body into the next route's) and would have missed the real defect.
+  // This drives every mutating route against a live server and diffs
+  // events.jsonl, which is the only evidence that counts.
+  //
+  // Found this way: the entire Sentinel operator lifecycle
+  // (acknowledge -> contain -> resolve) wrote nothing to the audit log. The
+  // transition was recorded only in the finding's own statusHistory, which
+  // lives in a mutable snapshot store rather than the tamper-evident one.
+  //
+  // A route that writes no event must be listed in NO_AUDIT with a reason.
+  await check('every state-changing route writes an audit entry (or is a documented exception)', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const b = server.baseUrl;
+      const logFile = path.join(dataDir, 'events.jsonl');
+      const lines = () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean).length : 0);
+
+      const ws = (await json(await post(b, '/api/workspaces', { name: 'AuditCov' }))).body;
+      const goal = (await json(await post(b, `/api/workspaces/${ws.id}/goals`, { title: 'G' }))).body;
+      const agent = (await json(await post(b, '/api/agents', { name: 'AC', provider: 'custom', command: 'echo hi' }))).body;
+      const wstream = (await json(await post(b, '/api/workstreams', { name: 'WS' }))).body;
+
+      // Routes that deliberately write nothing, each with a stated reason.
+      const NO_AUDIT = {
+        'PUT /api/onboarding': 'wizard step/draft autosave — fires on every step change during first-run setup; auditing it would bury real events in setup churn. The completion of onboarding IS audited (onboarding.completed).',
+      };
+
+      const cases = [
+        ['PUT /api/profile', () => put(b, '/api/profile', { displayName: 'X' })],
+        ['POST /api/onboarding/start', () => post(b, '/api/onboarding/start', {})],
+        ['PUT /api/onboarding', () => put(b, '/api/onboarding', { currentStep: 'profile' })],
+        ['POST /api/onboarding/complete', () => post(b, '/api/onboarding/complete', { skipped: false })],
+        ['POST /api/workspaces', () => post(b, '/api/workspaces', { name: 'W2' })],
+        ['PUT /api/workspaces/:id', () => put(b, `/api/workspaces/${ws.id}`, { name: 'Renamed' })],
+        ['POST /api/workspaces/:id/archive', () => post(b, `/api/workspaces/${ws.id}/archive`, { archived: true })],
+        ['POST /api/workspaces/:id/goals', () => post(b, `/api/workspaces/${ws.id}/goals`, { title: 'G2' })],
+        ['PUT /api/workspaces/:id/goals/:gid', () => put(b, `/api/workspaces/${ws.id}/goals/${goal.id}`, { title: 'G edited' })],
+        ['DELETE /api/workspaces/:id/goals/:gid', () => fetch(`${b}/api/workspaces/${ws.id}/goals/${goal.id}`, { method: 'DELETE' })],
+        ['PUT /api/workspaces/:id/agents/:aid', () => put(b, `/api/workspaces/${ws.id}/agents/interview_agent`, { enabled: true })],
+        ['PUT /api/workspaces/:id/yc', () => put(b, `/api/workspaces/${ws.id}/yc`, { itemId: 'ss_enrolled', done: true })],
+        ['POST /api/agents', () => post(b, '/api/agents', { name: 'A2', provider: 'custom', command: 'echo x' })],
+        ['PUT /api/agents/:id', () => put(b, `/api/agents/${agent.id}`, { name: 'A renamed' })],
+        ['POST /api/workstreams', () => post(b, '/api/workstreams', { name: 'WS2' })],
+        ['PUT /api/workstreams/:id', () => put(b, `/api/workstreams/${wstream.id}`, { name: 'WS renamed' })],
+        ['POST /api/workstreams/:id/archive', () => post(b, `/api/workstreams/${wstream.id}/archive`, {})],
+        ['POST /api/workstreams/:id/unarchive', () => post(b, `/api/workstreams/${wstream.id}/unarchive`, {})],
+        ['DELETE /api/agents/:id', () => fetch(`${b}/api/agents/${agent.id}`, { method: 'DELETE' })],
+      ];
+
+      const silent = [];
+      for (const [name, call] of cases) {
+        const before = lines();
+        const res = await call();
+        // A route that errors writes no event for an uninteresting reason. If
+        // the call fails, the CASE is broken, not the audit coverage — fail
+        // loudly rather than record a false "no audit". (An earlier hand-run
+        // version of this probe reported a false finding exactly this way: a
+        // bad YC item id produced a 400 and looked like a missing audit entry.)
+        assert.ok(res.status >= 200 && res.status < 300, `${name} must succeed for this check to mean anything, got ${res.status}`);
+        if (lines() === before && !NO_AUDIT[name]) silent.push(name);
+      }
+
+      // Sentinel's operator lifecycle needs a real finding: force one by
+      // tampering a store, then walk acknowledge -> contain -> resolve.
+      const agentsFile = path.join(dataDir, 'agents.json');
+      fs.writeFileSync(agentsFile, fs.readFileSync(agentsFile, 'utf8').replace('"A2"', '"HAND EDITED"'));
+      await fetch(`${b}/api/agents`);
+      const findings = (await json(await fetch(`${b}/api/security/findings`))).body;
+      const list = Array.isArray(findings) ? findings : (findings.findings || []);
+      assert.ok(list.length > 0, 'tampering must produce a Sentinel finding for this check to mean anything');
+      for (const step of ['acknowledge', 'contain', 'resolve']) {
+        const before = lines();
+        const res = await post(b, `/api/security/findings/${list[0].id}/${step}`, { note: 'coverage' });
+        assert.strictEqual(res.status, 200, `${step} must succeed`);
+        if (lines() === before) silent.push(`POST /api/security/findings/:id/${step}`);
+      }
+
+      assert.deepStrictEqual(silent, [],
+        `these state-changing routes wrote NO audit entry and are not documented exceptions:\n  ${silent.join('\n  ')}`);
+
+      // The allowlist must not rot into an excuse for routes that no longer exist.
+      for (const [route, why] of Object.entries(NO_AUDIT)) {
+        assert.ok(cases.some(([n]) => n === route), `NO_AUDIT names "${route}", which this check never exercises`);
+        assert.ok(why && why.length > 30, `NO_AUDIT entry for "${route}" needs a real reason`);
+      }
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   await check('every Feature Onboard store is registered for operator recovery', async () => {
     // A newly added store that the recovery endpoint does not know about is a
     // real gap: it would be the one store an operator could not repair after

@@ -53,6 +53,8 @@ Severity is about consequence to the operator, not effort to fix.
 | A-006 | hostile review | Low | performance | documented | O(n*m) rendering in the two new tabs |
 | A-007 | mutation sweep | Medium | test blind spot | fixed | the detail-load error path was uncovered; only the list-load path was tested |
 | A-008 | mutation sweep | Low | process hygiene | documented | the browser harness leaks Chromium and a temp dir when the suite is killed |
+| A-009 | verification foundation | High | audit bypass | fixed | the whole Sentinel operator lifecycle wrote nothing to the audit log |
+| A-010 | verification foundation | Medium | duplicated vocabulary | fixed | frontend status lists could drift from the backend, silently in one direction |
 
 ---
 
@@ -794,6 +796,73 @@ Severity is about consequence to the operator, not effort to fix.
   tests is evidence of environment, not of either test. Confirmed by cleaning
   up and re-running twice: 41/41 both times.
 
+## A-009 — The Sentinel operator lifecycle wrote nothing to the audit log
+
+- **Phase**: verification foundation (class J, audit bypass) · **Severity**: High · **Category**: audit bypass · **Status**: fixed
+- **Files**: `src/sentinel.js`, `test/integration.test.js`
+- **Symptom**: `acknowledge`, `contain` and `resolve` all returned 200, all
+  changed the finding's status, and all wrote **zero** entries to the
+  append-only hash-chained audit log. Measured by diffing `events.jsonl`
+  around each call on a live server:
+  ```
+  acknowledge  HTTP 200  status=acknowledged  audit events written: 0
+  contain      HTTP 200  status=contained     audit events written: 0
+  resolve      HTTP 200  status=resolved      audit events written: 0
+  ```
+- **Why it matters**: `transition()` records the change in the finding's own
+  `statusHistory`, which lives in `security_events.json` — a snapshot store
+  rewritten in full on every write. `events.jsonl` is the tamper-evident one.
+  The operator's decision was recorded only in the *less* protected place.
+  Containment can stop a running agent; that stop was audited (via
+  agentManager) but the decision to contain was not, so a containment that
+  stopped nothing left no trace at all.
+- **Root cause**: `sentinel.init()` already receives an `eventLogRecord`
+  seam, and `createFinding()` uses it. `transition()` simply never did.
+- **Fix at the source, not the call sites**: the emit lives inside
+  `transition()`, which is the only path by which a finding's status changes,
+  so a fourth transition route cannot be added later without an audit entry.
+  Fixing the three routes individually would have left that hole open.
+- **How it was found — and a lesson about the method**: a static scan for
+  `audit(`/`eventLog.record` near each route reported `resolve` as audited.
+  That was a **false positive**: the scan window ran past the route body into
+  the next route, which does audit. Only the empirical probe — call the route,
+  diff the log — was correct. Source structure is not evidence of behaviour.
+- **Class eliminated**: a new integration contract drives **22 mutating
+  routes** against a live server and asserts each writes an entry, or is named
+  in a `NO_AUDIT` allowlist with a reason. It also asserts each call returned
+  2xx first, so a broken request cannot masquerade as a missing audit entry —
+  an earlier hand-run probe produced exactly that false finding when a bad YC
+  item id returned 400.
+- **Fail-without proof**: removing the emit fails the contract with "these
+  state-changing routes wrote NO audit entry and are not documented
+  exceptions".
+- **One documented exception**: `PUT /api/onboarding` (wizard step autosave)
+  writes nothing by design — it fires on every step of first-run setup and
+  would bury real events. `onboarding.completed` is audited.
+
+## A-010 — Frontend status vocabularies could drift from the backend
+
+- **Phase**: verification foundation (class W, duplicate code paths) · **Severity**: Medium · **Category**: duplicated definition · **Status**: fixed
+- **Files**: `public/onboard.js`, `test/routeCoverage.test.js`
+- **Symptom**: `TASK_STATUSES`, `DECISION_STATUSES` and `EXPERIMENT_STATUSES`
+  are defined in both `src/workspaceRecordsStore.js` and `public/onboard.js`,
+  with nothing comparing them.
+- **Why the existing mitigation was only half true**: a comment in
+  `onboard.js` claimed drift "surfaces as a VALIDATION_ERROR rather than as
+  silently-accepted bad data". True in one direction only. A frontend value the
+  backend rejects does error. A value the **backend gains and the frontend
+  lacks** is completely silent — the operator simply cannot select it and
+  nothing fails anywhere.
+- **Root cause**: the browser cannot `require()` the store module, so the lists
+  are restated. That is unavoidable; the absence of a comparison was not.
+- **Class eliminated**: a contract asserting each restated vocabulary matches
+  the backend export exactly, with a message naming which direction drifted.
+- **Fail-without proofs**, both directions:
+  - backend gains `'blocked'` → `TASK_STATUSES has drifted`
+  - frontend drops two statuses → `DECISION_STATUSES has drifted`
+- **Generalizes**: this is the fourth instance of one concept with two
+  definitions (F-005, R-007, R-003, now this). The reusable rule is below.
+
 ---
 
 ## Patterns that recur across these findings
@@ -828,3 +897,16 @@ Stated once here rather than repeated in every entry.
    unguarded.
 13. **Consecutive runs failing on DIFFERENT tests means environment, not
    defect.** A-008. Check for orphaned processes before touching code.
+14. **Source structure is not evidence of behaviour.** A-009: a static scan for
+   an audit call reported a route as audited because its window ran into the
+   next route's body. Probe the running system and diff the observable
+   artifact.
+15. **When one concept must have two definitions, add a comparison.** F-005,
+   R-007, R-003, A-010. The duplication is often unavoidable (a browser cannot
+   import a server module); the missing comparison never is.
+16. **Drift is often asymmetric — check the silent direction.** A-010: one
+   direction raised a validation error, the other was invisible. A mitigation
+   that only covers the loud direction is not a mitigation.
+17. **Fix at the single path, not at the call sites.** A-009's emit lives in
+   `transition()` rather than in three routes, so a fourth route cannot
+   reintroduce the gap.

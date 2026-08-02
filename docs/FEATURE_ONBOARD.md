@@ -283,10 +283,10 @@ removed, or if a route claimed to be operator-reachable has no call site in
 
 | Layer | Command | Count |
 |---|---|---|
-| Unit | `npm run test:unit` | 97 |
-| Integration (real HTTP, real server) | `npm run test:integration` | 35 |
+| Unit | `npm run test:unit` | 98 |
+| Integration (real HTTP, real server) | `npm run test:integration` | 36 |
 | Frontend (real Chromium) | `npm run test:frontend` | 41 |
-| Everything | `npm run test:all` | **173** |
+| Everything | `npm run test:all` | **175** |
 
 CI (`.github/workflows/ci.yml`) runs all three plus a syntax check, `npm audit`,
 and a working-tree-clean gate, on pull requests and pushes to `main` and

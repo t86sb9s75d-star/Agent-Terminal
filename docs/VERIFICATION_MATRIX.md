@@ -114,6 +114,9 @@ was actually checked:
 | One tampered store yields one integrity event per request, not one per entity | Automated-test verified | `test/integration.test.js` — 5 workspaces / 4 agents; proven to fail against the pre-fix code (5 and 8 events respectively) |
 | A superseded workspace load can never render over the current one | Automated-test verified | `test/frontend/featureOnboard.test.js` — forces the race by delaying one workspace's fetch; proven to fail before the load-token fix |
 | Every load-bearing guarantee is defended by a test that provably fails | Automated-test verified | A 20-mutation sweep across all three layers: each mutation is applied, **verified to have actually changed the file**, the layer is run, and the mutation restored. 19/20 caught on the first pass; the survivor exposed a real coverage gap (see below) and is now caught. Mutations covered: all four workspace-scoping terms independently, required-field-on-create, both halves of the date validator, unknown permission keys, `assertEnum`, `null`-vs-`0` progress, tamper re-baselining, recovery registration, both R-006 amplification paths, `esc()`, tab removal, capability rendering, approval-claim copy, both UI error paths, and the A-001 load token. |
+| Every state-changing route writes an audit entry | Automated-test verified | `test/integration.test.js` — drives 22 mutating routes against a live server and diffs `events.jsonl`; asserts each returned 2xx first so a broken request cannot masquerade as a missing entry. One documented exception (`PUT /api/onboarding`, wizard autosave). Proven to fail when the Sentinel emit is removed. |
+| Frontend status vocabularies match the backend | Automated-test verified | `test/routeCoverage.test.js` — proven to fail in **both** directions, including the silent one (backend gains a value the frontend lacks) |
+| Every `src/` module is exercised by at least one test path | Automated-test verified (structural) | 35/35 reachable from the integration suite's real server boot or required directly by a unit test |
 | Behaviour under **concurrent** operator actions | **Not verified** | Every test in every layer is strictly sequential. Races are only covered where a test forces one explicitly (the load-token case above). Concurrent permission edits are known-broken — see A-002. |
 | A failed record load is shown as an error, never as an empty state | Automated-test verified | `test/frontend/featureOnboard.test.js` — corrupts a store beyond recovery and asserts the UI never renders "No workspaces yet" |
 | Optional dates reject objects, arrays, malformed and ambiguous strings | Automated-test verified | `test/workspaceStores.test.js` + `test/integration.test.js` — all three date fields driven from one table; proven to fail against the pre-fix code |
@@ -134,14 +137,14 @@ this repository have drifted twice before; they are regenerated, never edited.
 `test/workstreamsStore.test.js` (15, includes 3 Option B cases) +
 `test/effectiveModel.test.js` (11) + `test/progress.test.js` (14) +
 `test/domainModel.test.js` (17) + `test/workspaceStores.test.js` (24) +
-`test/routeCoverage.test.js` (5) = **97**.
+`test/routeCoverage.test.js` (6) = **98**.
 
-`test/integration.test.js` (**35** cases, spawning real server processes
+`test/integration.test.js` (**36** cases, spawning real server processes
 against throwaway data directories) +
 `test/frontend/featureOnboard.test.js` (**41** cases, driving real Chromium
 against a real server).
 
-**97 unit + 35 integration + 41 browser = 173 tests, all passing** as of the
+**98 unit + 36 integration + 41 browser = 175 tests, all passing** as of the
 final commit on this branch, and verified green in CI on the remote branch
 (`.github/workflows/ci.yml`).
 
