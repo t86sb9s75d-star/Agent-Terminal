@@ -9,11 +9,12 @@
     "start": "node src/server.js",
     "test:unit": "node test/runsStore.pricing.test.js && node test/runsStore.executionSuccess.test.js && node test/workstreamsStore.test.js && node test/effectiveModel.test.js && node test/progress.test.js && node test/domainModel.test.js && node test/workspaceStores.test.js && node test/routeCoverage.test.js",
     "test:integration": "node test/integration.test.js",
-    "test": "npm run test:unit && npm run test:kernel && npm run test:integration",
+    "test": "npm run test:unit && npm run test:kernel && npm run test:integration && npm run test:slice0",
     "test:frontend": "node test/frontend/featureOnboard.test.js",
-    "test:all": "npm run test:unit && npm run test:kernel && npm run test:chaos && npm run test:integration && npm run test:frontend",
+    "test:all": "npm run test:unit && npm run test:kernel && npm run test:chaos && npm run test:integration && npm run test:slice0 && npm run test:frontend",
     "test:kernel": "node test/kernel/harness.test.js && node test/kernel/faultMatrix.test.js && node test/kernel/adversarial.test.js && node test/kernel/acceptance.test.js",
-    "test:chaos": "node test/kernel/chaos.test.js"
+    "test:chaos": "node test/kernel/chaos.test.js",
+    "test:slice0": "node test/slice0.test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",

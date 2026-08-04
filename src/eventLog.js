@@ -19,6 +19,11 @@ let log = null;
 // or did something automated do this while nobody was watching," and the
 // old schema could never answer that even in principle.
 const ACTOR_TYPES = [
+  // 'owner' is distinct from 'human_operator' on purpose: human_operator means
+  // "arrived over HTTP without a client header", which a local curl also
+  // satisfies. 'owner' means ownerAuth verified a token. Only the second is
+  // evidence of authority (Slice 0).
+  'owner',
   'human_operator', 'system', 'system_recovery', 'scheduler',
   'policy_engine', 'agent', 'security_monitor', 'api_client', 'migration',
 ];

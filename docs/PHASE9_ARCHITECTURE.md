@@ -813,3 +813,98 @@ later gets seven fault cases without anyone remembering to write them.
 - **[High Confidence]** Chaos is stable across seeds (5 fixed seeds plus
   randomized runs). Absence of failure at 1000 operations is not proof of
   absence at 10^6.
+
+---
+
+## 21. Slice 0 — operator plane and authorization context
+
+### What is TRUE after Slice 0, and what is not
+
+**Verified runtime behavior** (executable evidence, `test/slice0.test.js`):
+
+- Governance state — the root Constitution and executable-agent bindings —
+  can only be altered by a caller presenting the owner token.
+- A **real `custom` shell agent, running a real `curl` against the loopback
+  admin API**, receives HTTP 401 and changes nothing. Fired end to end, not
+  reasoned about.
+- Legacy agents without an owner-assigned workspace are refused, with a
+  specific reason and a migration path, and the refusal is audited.
+- The `custom` provider cannot be selected for governed execution.
+- Every governance denial and every amendment attempt — accepted or rejected —
+  produces an audit record.
+
+**NOT true, and must not be written anywhere as if it were:**
+
+> **`agentManager.start()` is not routed through the kernel. No production
+> agent run is governed by the Constitution today.** Slice 0 built the
+> operator plane and the authorization context; Slice 1 is what makes real
+> execution pass through them. Until then the governance layer is a gate that
+> production traffic does not yet enter.
+
+The `/api/governance/constitution` response says this in its own payload
+(`enforcementScope`), so no client can render it as more than it is.
+
+### Decisions implemented
+
+| Decision | Implementation |
+|---|---|
+| Legacy agents fail closed | `agentBindingStore.resolveContext()` returns a refusal for any unbound agent. **No synthetic workspace. Authorization is never inferred from `workstreamId`** — proven by a test that adds a workstream and confirms the agent is *still* refused. |
+| One fleet-wide root Constitution | `src/constitution.js`. Versioned, hashed, append-only chained history, owner-only amendment, every attempt audited. Workspace profiles are not implemented; `narrowWith()` fixes their semantics as a **union of prohibitions**, with no operation that removes a root rule. |
+| Custom shell out of governed scope | Refused by **two independent mechanisms**: the `GOVERNED_PROVIDERS` allowlist and a `quarantine_provider` rule in the genesis Constitution. Independence is proven — each alone still refuses. |
+
+### Why the active Constitution is derived, not stored
+
+The active Constitution is computed from the newest completed record in the
+chain rather than kept in a separate "current" field. That is what makes *"a
+Constitution write and its audit evidence cannot silently diverge"* true rather
+than aspirational: they are the same record, so there is no second place for
+them to disagree. A test asserts version, hash, chain linkage, and audit-event
+count all agree after every transition.
+
+### Findings from Slice 0 verification
+
+1. **[Certain] `actorFromRequest()` returns `human_operator` for any header-less
+   request — including a bare `curl`.** My first defence-in-depth checks in
+   `constitution.amend` and `agentBindingStore.bind` required exactly that
+   actor type, so a shell agent would have satisfied them. Fixed by adding a
+   distinct `owner` actor type that only code downstream of
+   `ownerAuth.assertOwner()` can mint.
+
+2. **[Certain] A false-positive mutation detection.** Adding `custom` to
+   `GOVERNED_PROVIDERS` made the quarantine test fail — but the agent was
+   *still refused*, by the Constitution. The test had asserted the refusal
+   *code* rather than the refusal, so it reported "detected" for a reason
+   unrelated to the guarantee. Split into an essential assertion (refused) and
+   an informational one (which layer), plus an explicit independence test.
+
+3. **[Certain] A false failure from an over-narrow assertion.** A 100 KB
+   credential header is rejected by Node's own header limit with **431**,
+   before Express sees it. Asserting exactly 401 reported a failure against a
+   working — and stricter — defence. The assertion now checks the real property:
+   *never authenticates*.
+
+4. **[Certain] `chainedLog.readAll()` returns `{records, …}`, not an array.**
+   Treating it as one made every Constitution read a 500. Caught by the live
+   server tests; no unit test on the module alone would have.
+
+### Known limitations — Slice 0
+
+- **[Certain] Production execution is ungoverned.** See above. This is the
+  single most important limitation and Slice 1 is its only remedy.
+- **[Certain] Only governance state is authenticated.** Ordinary product CRUD
+  (agents, workstreams, workspace records) remains unauthenticated on loopback,
+  exactly as before. A local shell agent can still create or delete an agent.
+  Deliberate Slice 0 boundary, not an oversight.
+- **[Certain] The owner token is a file on disk (mode 0600) and an env var.**
+  An attacker who can already read arbitrary files as this user has it. An
+  in-process control cannot defend against that; OS isolation can.
+- **[Certain] In-process guards are not OS isolation.** Nothing here makes
+  shell bypass impossible — it makes shell *selection* refused, which is a
+  smaller and different claim.
+- **[Certain] Optimistic concurrency requires the client to send
+  `expectedPriorId`.** An amendment omitting it is last-write-wins. Ten
+  concurrent amendments *with* it yield exactly one winner and nine 409s
+  (tested); ten without it would all apply.
+- **[High Confidence] Orphaned bindings are surfaced, not prevented.** Deleting
+  an agent leaves its binding, flagged `orphaned` in the listing. Admission
+  fails closed (404 on the missing agent), so an orphan authorizes nothing.

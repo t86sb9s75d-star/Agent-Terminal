@@ -29,6 +29,15 @@ const Codes = {
   POLICY_BLOCKED: 'POLICY_BLOCKED',
   IDEMPOTENCY_CONFLICT: 'IDEMPOTENCY_CONFLICT',
   NOT_FOUND: 'NOT_FOUND',
+  // Slice 0 — governance actions require owner authentication.
+  UNAUTHORIZED: 'UNAUTHORIZED',
+  // A governed agent lacks the authoritative context it must have to execute:
+  // no workspace binding, no capability grant, or no active Constitution.
+  // Distinct from VALIDATION_ERROR because the request is well-formed — it is
+  // the authorization context that is absent, and it fails CLOSED.
+  GOVERNANCE_CONTEXT_MISSING: 'GOVERNANCE_CONTEXT_MISSING',
+  // The requested provider is quarantined from governed execution.
+  PROVIDER_QUARANTINED: 'PROVIDER_QUARANTINED',
 };
 
 function requireString(value, fieldName) {
