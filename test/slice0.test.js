@@ -59,6 +59,16 @@ function stopServer() {
   if (dataDir) { fs.rmSync(dataDir, { recursive: true, force: true }); dataDir = null; }
 }
 
+// Unconditional sweep. A run that dies mid-scenario — which is exactly what a
+// mutation run does — never reaches its own stopServer(), and the orphaned
+// server keeps its port and data dir. Phase 8's A-008 was two consecutive
+// suites failing on DIFFERENT tests because of one leaked headless browser;
+// a leaked server is the same defect wearing different clothes.
+process.on('exit', stopServer);
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => { stopServer(); process.exit(1); });
+}
+
 async function api(method, route, { body, token, headers = {} } = {}) {
   const res = await fetch(`${baseUrl}${route}`, {
     method,
