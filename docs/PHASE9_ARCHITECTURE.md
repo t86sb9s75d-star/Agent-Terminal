@@ -813,3 +813,90 @@ later gets seven fault cases without anyone remembering to write them.
 - **[High Confidence]** Chaos is stable across seeds (5 fixed seeds plus
   randomized runs). Absence of failure at 1000 operations is not proof of
   absence at 10^6.
+
+
+---
+
+## 22. Hostile review of PR #8 — findings
+
+Conducted against `fa98db3` with the existing 398 passing tests treated as an
+unproven claim rather than evidence.
+
+### Confirmed production kernel defect — malformed cost bounds
+
+**[Certain] A capability could declare a negative maximum cost, and a negative
+hold CREDITS the reservation ledger.**
+
+Measured: available budget rose from $1.00 to $6.00 while one `maxCostUsd: -5`
+hold was open. End to end, a $1.00 cap admitted **20 executions** of a
+capability really costing $0.50 each, committing **$10.00** — a 10x overspend
+of a cap the system reports as enforced.
+
+`NaN` and `"abc"` were also accepted, reserving 0 while the transaction record
+still read `costBounded: true` — the artifact vouching for a bound that did not
+exist. `Infinity` already failed closed.
+
+**Why the suite missed it:** `registry.define()` validated `id`, `effector` and
+`budgetClass` but never `maxCostUsd`, and every fixture and acceptance
+capability declared a well-formed positive number. No test ever supplied a
+malformed bound, so the path was unreachable from the suite.
+
+**Root-cause fix at three layers:**
+
+1. `registry.define()` refuses any `maxCostUsd` that is not `null` or a finite
+   number `>= 0` — a mis-declared capability never becomes registrable.
+2. `reservations.reserve()` refuses negative, non-finite and non-numeric
+   amounts. Independent second defence: a caller that bypasses the registry
+   still cannot credit the ledger.
+3. `costBounded` is true only when the declared maximum is usable, so an
+   unbounded or garbage declaration is visible in the artifact.
+
+**A first version of fix (2) was itself defective** and is worth recording: it
+validated `Number(amountUsd) || 0`, i.e. the *already-coerced* value, so `NaN`
+and `"abc"` had become `0` — finite and non-negative — and passed. Coercing
+before validating means the check can only ever see values that already look
+valid. It now validates the raw input.
+
+### Documentation overclaim — chaos determinism
+
+**[Certain]** `chaos.test.js` claimed "all randomness comes from the seeded
+generator; Math.random is never called". The second clause is true; the first
+is not. `crypto.randomUUID()` is called per transaction and session in
+`kernel.js`, and `fs.mkdtempSync()` in the world builder. Neither is seeded.
+
+Replay of the *observable* artifacts is nevertheless reliable — three
+consecutive runs of seed 424242 produced identical outcome counts, denial
+reasons and record totals — because no assertion depends on an identifier's
+value. The note now states exactly what the seed controls, and that a
+cancellation slice fired from `setTimeout` makes replay reliable in practice
+rather than guaranteed.
+
+### Invalid mutation — recorded because the failure mode matters
+
+**[Certain]** My first attempt to revert the registry guard deleted the block
+and left the file syntactically invalid. The suite never loaded, printed no
+test names, and my probe — which searched the output for the test's name —
+reported "not caught". **A crashed suite and an undetected defect are
+indistinguishable to a name-matching probe.** Redone surgically (neutralise the
+condition, keep the block), with explicit gates: the mutated file must parse,
+the mutation must be present, and the suite must print its summary line before
+any result is interpreted.
+
+### Attacked and found sound
+
+- **Fault-matrix vacuity** — instrumented all 77 cells to record whether the
+  faulted stage was actually entered. **0 vacuous cells.**
+- **Suite discovery and exit paths** — an unhandled rejection in any test file's
+  async IIFE exits non-zero on Node 22, and the `&&` chain stops at the first
+  failure. Verified by injecting a throw before any check ran.
+- **Layer separation** — proven falsifiable: adding a `require('../../../src/kernel/…')`
+  to the specification makes the check fail.
+- **Scope integrity** — PR #8 contains no Slice 0 implementation file, no
+  onboarding history, and its CI invokes the kernel and chaos suites.
+
+### Measurement weakness in my own reporting
+
+**[Certain]** My earlier regeneration of test totals piped `npm run test:kernel`
+into `grep | awk` and summed the reported numbers **while ignoring the exit
+code**. A suite that died early would have produced a smaller total with no
+error raised. Totals below are taken with the exit code checked.

@@ -44,7 +44,25 @@ function createReservationLedger({ capUsd = null, spentUsd = 0 } = {}) {
   // instance lock (src/instanceLock.js) is load-bearing for this guarantee and
   // not merely a data-safety convenience.
   function reserve({ txId, sessionId, amountUsd }) {
-    const amount = Number(amountUsd) || 0;
+    // Validate the RAW input, BEFORE any coercion. A first version of this
+    // guard checked `Number(amountUsd) || 0` and so ran on an already-coerced
+    // value: NaN and "abc" had become 0, which is finite and >= 0, so they
+    // passed and silently booked a zero hold. Coercing first and validating
+    // second means the check can only ever see values that already look valid.
+    //
+    // The negative case is the dangerous one: a negative hold INCREASES
+    // available budget — measured going from $1.00 to $6.00 with one such hold
+    // open, and $10.00 committed against a $1.00 cap. This is the second of two
+    // independent defences; the registry refuses to define such a capability at
+    // all, and this refuses to honour the amount if something reaches here
+    // directly.
+    if (typeof amountUsd !== 'number' || !Number.isFinite(amountUsd) || amountUsd < 0) {
+      return {
+        ok: false,
+        reason: `refusing a reservation of ${String(amountUsd)} — an amount must be a finite number >= 0; a negative hold would credit the ledger`,
+      };
+    }
+    const amount = amountUsd;
     if (capUsd !== null && amount > available()) {
       return {
         ok: false,

@@ -9,9 +9,24 @@
 //
 // SEEDED, and the seed is printed on every run. A chaos failure you cannot
 // reproduce is a rumour, not a bug report — re-run with
-// RUCKER_CHAOS_SEED=<seed> to replay the exact sequence. All randomness comes
-// from the seeded generator; Math.random is never called, or the replay
-// guarantee would be a lie.
+// RUCKER_CHAOS_SEED=<seed> to replay the sequence.
+//
+// PRECISELY WHAT IS AND IS NOT DETERMINISTIC. An earlier version of this note
+// claimed "all randomness comes from the seeded generator", which hostile
+// review showed to be false: the kernel calls crypto.randomUUID() for every
+// transaction and session id, and the world builder calls fs.mkdtempSync().
+// Neither is seeded.
+//
+// What the seed DOES control is the operation sequence — capability, workspace,
+// session reuse, batch size, depth, cancellation, and effector behaviour. No
+// assertion depends on an identifier's value, so replaying a seed reproduces
+// the outcome counts, denial reasons and record totals; verified identical
+// across three consecutive runs of seed 424242.
+//
+// It is still not a hard guarantee: a slice of transactions is cancelled from a
+// setTimeout, so when the abort lands relative to async work is wall-clock
+// dependent. Replay is reliable in practice and is NOT proof of bit-identical
+// behaviour on a loaded machine.
 //
 // Run with: node test/kernel/chaos.test.js
 //           RUCKER_CHAOS_SEED=12345 node test/kernel/chaos.test.js

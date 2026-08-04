@@ -200,7 +200,12 @@ function createKernel({
     },
 
     budget(ctx) {
-      const bound = ctx.capability.budgetClass === 'metered' ? Number(ctx.capability.maxCostUsd) || 0 : 0;
+      // `Number(x) || 0` turns NaN and "abc" into 0, which would let a metered
+      // capability run as if free while costBounded still read true. Decide
+      // usability explicitly instead of coercing.
+      const declared = ctx.capability.maxCostUsd;
+      const declaredUsable = typeof declared === 'number' && Number.isFinite(declared) && declared >= 0;
+      const bound = ctx.capability.budgetClass === 'metered' && declaredUsable ? declared : 0;
       const res = reservations.reserve({ txId: ctx.txId, sessionId: ctx.sessionId, amountUsd: bound });
       if (!res.ok) {
         ctx.deny('budget.cap_reached', res.reason);
@@ -210,7 +215,10 @@ function createKernel({
       ctx.reservedUsd = res.amountUsd;
       // An unbounded metered capability reserves zero, but the fact is recorded
       // rather than silently treated as free.
-      ctx.costBounded = !(ctx.capability.budgetClass === 'metered' && ctx.capability.maxCostUsd === null);
+      // A metered capability is "bounded" only when its declared maximum is a
+      // usable number. Absent (null) or unusable (NaN, Infinity, a string,
+      // negative) both mean the artifact must NOT claim the cost is bounded.
+      ctx.costBounded = ctx.capability.budgetClass !== 'metered' ? true : declaredUsable;
     },
 
     record(ctx) {

@@ -34,6 +34,26 @@ function createRegistry() {
     if (!['none', 'metered'].includes(budgetClass)) {
       throw new Error(`capability "${id}" has unknown budgetClass "${budgetClass}"`);
     }
+    // A declared bound must be usable or absent. Found by hostile review:
+    // define() validated id, effector and budgetClass but never maxCostUsd, so
+    // `maxCostUsd: -5` was registrable — and a NEGATIVE hold CREDITS the
+    // ledger. Measured: a $1.00 cap admitted 20 executions of a capability
+    // really costing $0.50 each, committing $10.00. NaN and "abc" were also
+    // accepted, silently reserving 0 while the record still claimed the cost
+    // was bounded.
+    //
+    // Rejecting at definition time is the root fix: a mis-declared capability
+    // should never become registrable in the first place. The ledger refuses
+    // negative amounts too (reservations.js), because a caller that bypasses
+    // the registry must still not be able to credit budget.
+    if (maxCostUsd !== null) {
+      if (typeof maxCostUsd !== 'number' || !Number.isFinite(maxCostUsd) || maxCostUsd < 0) {
+        throw new Error(
+          `capability "${id}" declares an unusable maxCostUsd (${String(maxCostUsd)}) — ` +
+          'it must be null, or a finite number >= 0'
+        );
+      }
+    }
     capabilities.set(id, {
       id,
       effector,

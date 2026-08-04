@@ -208,6 +208,73 @@ function worldWithNewCapability(extra = {}) {
   }
 
   // =====================================================================
+  // 2b. A declared cost bound must be USABLE or absent.
+  //
+  // Regression for a confirmed kernel defect found by hostile review: define()
+  // validated id, effector and budgetClass but never maxCostUsd. A capability
+  // declaring `maxCostUsd: -5` was registrable, and a negative hold CREDITS the
+  // ledger — measured: a $1.00 cap admitted 20 executions of a capability
+  // really costing $0.50 each, committing $10.00.
+  //
+  // The existing suite missed it because every fixture declared a well-formed
+  // positive number, so no test ever supplied a malformed bound.
+  // =====================================================================
+  await check('REGISTRY: an unusable declared cost bound is refused at definition time', () => {
+    const { createRegistry } = require('../../src/kernel/registry');
+    for (const bad of [-5, -0.01, NaN, Infinity, -Infinity, 'abc', {}, true, []]) {
+      const reg = createRegistry();
+      reg.defineEffector('e', async () => ({ ok: true }));
+      assert.throws(
+        () => reg.define({ id: 'bad.cap', effector: 'e', budgetClass: 'metered', maxCostUsd: bad }),
+        /unusable maxCostUsd/,
+        `maxCostUsd=${String(bad)} was ACCEPTED — a mis-declared bound must never become registrable`
+      );
+    }
+    // And the legitimate values still work, so this is not over-broad.
+    for (const good of [null, 0, 0.25, 1000]) {
+      const reg = createRegistry();
+      reg.defineEffector('e', async () => ({ ok: true }));
+      assert.doesNotThrow(
+        () => reg.define({ id: 'good.cap', effector: 'e', budgetClass: 'metered', maxCostUsd: good }),
+        `maxCostUsd=${String(good)} was refused — the guard is too broad`
+      );
+    }
+  });
+
+  await check('LEDGER: a negative or malformed hold can never credit the budget', () => {
+    const { createReservationLedger } = require('../../src/kernel/reservations');
+    // Independent second defence: even reached directly, bypassing the
+    // registry, the ledger must refuse. Checked against AVAILABLE BUDGET, the
+    // artifact — not against the return value alone.
+    for (const bad of [-5, NaN, Infinity, 'abc', undefined, null, '0.5']) {
+      const led = createReservationLedger({ capUsd: 1.0 });
+      const res = led.reserve({ txId: 't', sessionId: 's', amountUsd: bad });
+      assert.strictEqual(res.ok, false, `reserve(${String(bad)}) was accepted`);
+      assert.strictEqual(
+        led.available(), 1.0,
+        `reserve(${String(bad)}) changed available budget to ${led.available()} — a malformed hold moved the ledger`
+      );
+    }
+    const led = createReservationLedger({ capUsd: 1.0 });
+    assert.strictEqual(led.reserve({ txId: 't', sessionId: 's', amountUsd: 0.25 }).ok, true, 'a valid hold was refused');
+    assert.strictEqual(led.available(), 0.75, 'a valid hold did not move the ledger');
+  });
+
+  await check('BUDGET: a metered capability with no usable bound is NOT recorded as bounded', async () => {
+    const world = buildWorld({
+      capUsd: 1.0,
+      capabilities: [{ id: 'unbounded.cap', effector: 'fixture', budgetClass: 'metered', maxCostUsd: null }],
+    });
+    const res = await world.kernel.execute(world.intent({ capability: 'unbounded.cap' }));
+    const rec = world.observe().records.find((r) => r.txId === res.txId && r.terminal);
+    assert.strictEqual(
+      rec.costBounded, false,
+      'an unbounded metered capability was recorded as costBounded=true — the artifact would vouch for a bound that does not exist'
+    );
+    world.cleanup();
+  });
+
+  // =====================================================================
   // 3. Layer separation — Specification must not know the Implementation.
   // =====================================================================
   await check('LAYERS: the specification loads without pulling in any src/ module', () => {
