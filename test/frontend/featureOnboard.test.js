@@ -879,9 +879,33 @@ async function run() {
     await page.waitForSelector('.fo-missing');
     const before = await page.textContent('#view-yc .fo-missing');
     await page.click('#view-yc .fo-check input[type="checkbox"]');
-    await page.waitForTimeout(500);
-    const after = await page.textContent('#view-yc .fo-missing');
-    assert.notStrictEqual(before, after, 'missing-items text should update');
+    // CONDITION WAIT, not a fixed sleep. This was `waitForTimeout(500)` and it
+    // was the last surviving instance of the class Phase 8 eliminated: a POST
+    // followed by a refetch and a re-render takes longer than 500ms on a slower
+    // CI runner, so the text had not changed yet and the assertion failed
+    // against working code. It passed 3/3 locally and failed on CI — the
+    // signature of a timing assumption, not a defect.
+    //
+    // The `expectText` helper does not cover this shape (the assertion is
+    // "changed from X", not "contains Y"), which is why it was missed.
+    let after = before;
+    try {
+      await page.waitForFunction(
+        (prev) => {
+          const el = document.querySelector('#view-yc .fo-missing');
+          return el && el.textContent !== prev;
+        },
+        before,
+        { timeout: 10000 }
+      );
+      after = await page.textContent('#view-yc .fo-missing');
+    } catch {
+      after = await page.textContent('#view-yc .fo-missing');
+    }
+    assert.notStrictEqual(
+      before, after,
+      `missing-items text should update after completing an item, but stayed "${String(after).slice(0, 120)}" for 10s`
+    );
   });
 
   await check('[contract] YC progress is never presented as an acceptance probability', async ({ page, base }) => {
