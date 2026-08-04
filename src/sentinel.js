@@ -137,10 +137,36 @@ function transition(id, { status, actor, note }) {
   const idx = events.findIndex((e) => e.id === id);
   if (idx === -1) throw new AppError(Codes.NOT_FOUND, 'security finding not found', 404);
   const finding = events[idx];
+  const previousStatus = finding.status;
   finding.status = status;
   finding.statusHistory.push({ status, actor: actor || { actorType: 'system' }, at: new Date().toISOString(), note: note || null });
   events[idx] = finding;
   writeAll(events);
+
+  // Every operator transition lands in the append-only, hash-chained audit log
+  // — not only in this finding's own statusHistory.
+  //
+  // statusHistory lives in security_events.json, a snapshot store that is
+  // rewritten in full on every write. events.jsonl is the tamper-evident one.
+  // Recording the operator's decision ONLY in the mutable store meant the
+  // entire acknowledge -> contain -> resolve lifecycle was invisible to the
+  // audit trail, including containment, which can stop a running agent. The
+  // stop itself was audited; the decision to contain was not.
+  //
+  // Emitted here rather than in the three routes so a fourth transition route
+  // cannot be added later without an audit entry — this is the only path by
+  // which a finding's status changes.
+  if (registeredEventLogRecord) {
+    registeredEventLogRecord({
+      actor: actor || { actorType: 'system', actorId: null },
+      action: `sentinel.finding_${status}`,
+      entityType: finding.entityType,
+      entityId: finding.entityId,
+      details: { findingId: finding.id, ruleId: finding.ruleId, previousStatus, status, note: note || null },
+      flagged: true,
+      flagReason: `operator moved security finding ${finding.id} from ${previousStatus} to ${status}`,
+    });
+  }
   return finding;
 }
 

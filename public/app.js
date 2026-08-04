@@ -1,5 +1,8 @@
 (() => {
-  const OPERATOR_NAME = 'Brody';
+  // The greeting name comes from the founder profile (Settings / onboarding),
+  // not from a name compiled into the source. Empty until the operator sets
+  // one, in which case the greeting simply has no name in it.
+  let operatorName = '';
   const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   const state = {
@@ -187,13 +190,17 @@
   function statusOf(id) { return state.statuses[id]?.status || 'idle'; }
 
   async function loadAll() {
-    const [summary, agents, activity, workstreams, securityStatus] = await Promise.all([
+    const [summary, agents, activity, workstreams, securityStatus, profile] = await Promise.all([
       api('/api/summary'),
       api('/api/agents'),
       api('/api/activity?limit=80'),
       api('/api/workstreams'),
       api('/api/security/status'),
+      // The profile may legitimately be null on a fresh install; a failure to
+      // read it must not take the whole dashboard down over a greeting.
+      api('/api/profile').catch(() => null),
     ]);
+    operatorName = (profile && typeof profile.displayName === 'string') ? profile.displayName : '';
     state.summary = summary;
     state.agents = agents;
     state.activity = activity;
@@ -370,7 +377,7 @@
 
       <p class="greeting-eyebrow">${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</p>
       <div class="condition-block">
-        <h1 class="condition-headline">${greetingWord()}, ${OPERATOR_NAME}. <span class="state-word ${healthy ? 'healthy' : 'degraded'}">${healthy ? 'System healthy.' : `${s.needsAttention} needs attention.`}</span></h1>
+        <h1 class="condition-headline">${greetingWord()}${operatorName ? `, ${escapeHtml(operatorName)}` : ''}. <span class="state-word ${healthy ? 'healthy' : 'degraded'}">${healthy ? 'System healthy.' : `${s.needsAttention} needs attention.`}</span></h1>
         <p class="condition-sub"><strong>${s.active ?? 0}</strong> active now · <strong>${s.completedToday ?? 0}</strong> completed today${s.needsAttention ? ` · <strong>${s.needsAttention}</strong> failing` : ''}</p>
       </div>
 

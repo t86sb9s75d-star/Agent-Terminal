@@ -167,3 +167,46 @@ UI framework rewrite, no autonomous offensive-security capability, no
 "hack back," and no LLM-only security detection (Sentinel's rules are
 100% deterministic; see `docs/SENTINEL.md` for the explicit AI-advisory
 stub boundary).
+
+## Feature Onboard: Workspace as the parent of Workstream
+
+Feature Onboard introduced business workspaces. The hierarchy is:
+
+```
+Workspace  →  Workstream  →  Agents  →  Runs
+```
+
+**Decision: Workspace was added as the PARENT of the existing Workstream
+concept, rather than replacing it or sitting beside it as a peer.**
+
+The alternatives and why they lost:
+
+- *Replace Workstream with Workspace.* Rejected as destructive. Every run
+  permanently snapshots its `workstreamId` at start time (see
+  `runsStore.startRun`), which is what makes run history immune to later
+  reassignment. Replacing the concept would have required rewriting or
+  reinterpreting that attribution on historical runs — exactly the kind of
+  retroactive history edit the rest of this system refuses to do.
+- *Workspace and Workstream as peers.* Rejected as permanently confusing: two
+  overlapping grouping concepts with no stated relationship, which every future
+  feature would have to disambiguate.
+
+Consequences of the chosen shape:
+
+- A workspace is a business, company, or major project. A workstream is a
+  subordinate objective inside one (customer interviews, launch MVP).
+- Runs keep their existing workstream attribution unchanged, and reach a
+  workspace transitively through that workstream.
+- **Agent definitions stay global.** An agent is not duplicated per workspace;
+  only its enablement, permission preferences, and configuration are
+  per-workspace (`workspaceAgentSettingsStore`). This avoids N copies of the
+  same Interview Agent drifting apart.
+- **Workspace-owned records require a `workspaceId` and may optionally
+  reference a `workstreamId`.** Requiring a workstream would have forced the
+  operator to invent empty workstreams just to file business-wide information
+  such as a company-level decision. The optional reference is deliberately not
+  existence-checked: a workstream can be archived or removed independently, and
+  a stale optional pointer is far less harmful than a record with no workspace.
+- **Nothing is auto-migrated.** Agents and workstreams that predate Feature
+  Onboard stay unassigned until explicitly attached. The system never guesses
+  which business an existing object belonged to.

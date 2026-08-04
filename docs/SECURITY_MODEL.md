@@ -162,6 +162,69 @@ now also stores a hash of the request body, checked on reuse; reusing a
 key with a different payload returns a clean `409 IDEMPOTENCY_CONFLICT`
 instead. Verified live and via `test/integration.test.js`.
 
+### Workspace separation is NOT a security boundary
+
+Feature Onboard adds business workspaces. Every workspace-owned record carries
+a `workspaceId`, and every store operation is keyed on `(workspaceId, id)`
+together, so a record filed under one workspace is not reachable through
+another — verified at the store level, over HTTP, and in the rendered UI, each
+with a test proven to fail when the scoping is removed.
+
+The UI-level half of that claim needed correcting once and is worth stating
+precisely, because it is the layer the operator actually sees. Scoping is
+enforced in the stores and over HTTP; the UI additionally has to avoid
+*displaying* the wrong workspace's data, which is a different problem and was
+briefly broken. A slow load for a workspace the operator had already navigated
+away from resolved later and overwrote the current one, so the selector read
+one workspace while the panel rendered another's records. Fixed with a
+monotonic load token in `loadActiveWorkspaceDetail()` and covered by a
+regression case that forces the race deterministically by delaying one
+workspace's fetch. What is verified is therefore: the stores and API never
+*return* another workspace's records, and the UI never *renders* them,
+including under a raced load.
+
+That property is **organizational separation, not tenant isolation**, and the
+distinction matters:
+
+- There is still **no authentication**. Anyone who can reach the API can reach
+  every workspace. Scoping prevents accidental cross-contamination of one
+  business's records into another's views; it stops nothing an attacker does.
+- It is enforced in application code only. Anyone with filesystem access reads
+  every workspace's JSON directly, exactly as before.
+- It must never be cited as a reason this system could host more than one
+  person's data. Multi-user use would require authentication, authorization,
+  and a re-examination of the `custom` provider (below) — none of which exist.
+
+### Feature Onboard permissions are recorded, not enforced
+
+Business → Agents → Review permissions lists all thirteen capabilities (spend
+money, run commands, contact people, act without approval, and so on) with
+least-authority defaults — every consequential capability is off unless
+explicitly granted.
+
+**No stored value on that screen is consulted by the runtime.** All thirteen
+are recorded and displayed only. This is stronger than the earlier claim in
+this document, which said three were "enforced"; that was checked against every
+call site and found to be misleading:
+
+- `budget.assertWithinBudget()` runs before every run and reads the configured
+  daily caps. It never reads `spend_money` or `paid_model_calls` for this agent
+  or workspace.
+- `src/workers/custom.js` applies its trusted-operator boundary and
+  `minimalEnv()` to every custom run. It never reads `use_custom_provider`.
+
+Those two controls are real and do constrain the system — they are simply
+**not gated on these settings**. So three actions have an always-on system
+control, and zero of the thirteen toggles gate anything.
+
+There is also **no approval workflow** anywhere in this system. Nothing pauses
+to ask the operator before an agent acts, and no surface may imply otherwise.
+
+This is why neither the interface nor `docs/FEATURE_ONBOARD.md` describes those
+permissions as "blocked" or "protected". Granting or denying them changes what
+is recorded, not what an agent can do. The full per-capability table lives in
+`docs/FEATURE_ONBOARD.md`.
+
 ## Explicitly accepted, not fixed: shell injection via `custom` agents
 
 `workers/custom.js` runs `spawn(agent.command, { shell: true, ... })`.

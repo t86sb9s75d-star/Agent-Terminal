@@ -12,6 +12,7 @@ const eventLog = require('./eventLog');
 const workstreamsStore = require('./workstreamsStore');
 const runsStore = require('./runsStore');
 const configHistoryStore = require('./configHistoryStore');
+const { registerFeatureOnboardRoutes, STORES: onboardStores } = require('./featureOnboardApi');
 const sentinel = require('./sentinel');
 const systemState = require('./systemState');
 const instanceLock = require('./instanceLock');
@@ -96,6 +97,14 @@ eventLog.init(broadcast);
 store.init(onStoreEvent);
 runsStore.init(onStoreEvent);
 workstreamsStore.init(onStoreEvent);
+// Feature Onboard stores share the same audit emitter as every other store,
+// so their corruption/tamper events reach the audit log and Sentinel too.
+onboardStores.workspacesStore.init(onStoreEvent);
+onboardStores.records.initAll(onStoreEvent);
+onboardStores.founderProfile.init(onStoreEvent);
+onboardStores.onboarding.init(onStoreEvent);
+onboardStores.yc.init(onStoreEvent);
+onboardStores.agentSettings.init(onStoreEvent);
 sentinel.init({ onEvent: onStoreEvent, eventLogRecord: eventLog.record });
 agentManager.init(broadcast);
 
@@ -275,16 +284,31 @@ app.post('/api/workstreams/:id/resolve/:runId', (req, res) => {
 });
 
 // --- Agents CRUD ---
-function withWorkstreamName(agent) {
-  const ws = agent.workstreamId ? workstreamsStore.get(agent.workstreamId) : null;
+// `workstreams` may be a pre-read list. Resolving the name for a LIST of
+// agents must pass one, otherwise every agent re-reads (and re-integrity-
+// checks) workstreams.json — see the single-read note on GET /api/agents.
+function withWorkstreamName(agent, workstreams = null) {
+  if (!agent.workstreamId) return { ...agent, workstreamName: null };
+  const ws = workstreams
+    ? workstreams.find((w) => w.id === agent.workstreamId)
+    : workstreamsStore.get(agent.workstreamId);
   return { ...agent, workstreamName: ws ? ws.name : null };
 }
 
 app.get('/api/agents', (req, res) => {
+  // Read each store exactly ONCE for the whole request. This previously
+  // called getAgentRuns() and workstreamsStore.get() inside the map, so N
+  // agents meant 2N reads of runs.json and N of workstreams.json. Because
+  // every versionedStore.read() is an integrity checkpoint that emits an
+  // audit event and a Sentinel finding on a tampered file, that turned one
+  // out-of-band edit into 2N identical critical findings per page load
+  // (R-006, same root cause as the workspace-listing instance).
   const statuses = agentManager.getAllStatuses();
+  const allRuns = runsStore.listAll();
+  const workstreams = workstreamsStore.list();
   const agents = store.list().map((a) => {
-    const runSummary = agentManager.getAgentRuns(a.id).summary;
-    return withWorkstreamName({ ...a, ...statuses[a.id], ...runSummary });
+    const runSummary = runsStore.summarizeForAgent(a.id, allRuns);
+    return withWorkstreamName({ ...a, ...statuses[a.id], ...runSummary }, workstreams);
   });
   res.json(agents);
 });
@@ -480,6 +504,18 @@ const RECOVERABLE_STORES = {
   workstreams: (resolution) => workstreamsStore.recover(resolution),
   security_events: (resolution) => sentinel.recover(resolution),
   config_history: (resolution) => configHistoryStore.recover(resolution, eventLog.record),
+  // Feature Onboard stores — same explicit operator recovery path.
+  workspaces: (resolution) => onboardStores.workspacesStore.recover(resolution),
+  founder_profile: (resolution) => onboardStores.founderProfile.recover(resolution),
+  onboarding_state: (resolution) => onboardStores.onboarding.recover(resolution),
+  yc_progress: (resolution) => onboardStores.yc.recover(resolution),
+  workspace_agent_settings: (resolution) => onboardStores.agentSettings.recover(resolution),
+  workspace_goals: (resolution) => onboardStores.records.goals.recover(resolution),
+  workspace_tasks: (resolution) => onboardStores.records.tasks.recover(resolution),
+  workspace_decisions: (resolution) => onboardStores.records.decisions.recover(resolution),
+  workspace_assumptions: (resolution) => onboardStores.records.assumptions.recover(resolution),
+  workspace_experiments: (resolution) => onboardStores.records.experiments.recover(resolution),
+  workspace_evidence: (resolution) => onboardStores.records.evidence.recover(resolution),
 };
 
 app.post('/api/security/stores/:storeName/recover', (req, res) => {
@@ -506,6 +542,12 @@ app.post('/api/security/stores/:storeName/recover', (req, res) => {
     sendError(res, err, req);
   }
 });
+
+// Feature Onboard routes (workspaces, records, profile, onboarding, YC, agent
+// settings). Registered here — after every existing route, before the global
+// error handler — so it can't shadow anything and its thrown errors still
+// reach the shared handler.
+registerFeatureOnboardRoutes(app, { eventLog, actorFromRequest, sendError });
 
 // Global error handler — catches anything that reaches here without going
 // through a route's own try/catch, most notably body-parser rejecting

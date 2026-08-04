@@ -211,8 +211,11 @@ function summarize() {
   };
 }
 
-function summarizeForAgent(agentId) {
-  const runs = readAll().filter((r) => r.agentId === agentId);
+// `allRuns` lets a caller summarizing MANY agents in one request read the
+// store once and pass it in. Omitting it keeps the original behaviour (one
+// read per call), which is correct for a single-agent route.
+function summarizeForAgent(agentId, allRuns = null) {
+  const runs = (allRuns || readAll()).filter((r) => r.agentId === agentId);
   const todayRuns = runs.filter((r) => isToday(r.startedAt) && r.status !== 'running');
   const finished = runs.filter((r) => r.status !== 'running');
   const successCount = finished.filter((r) => r.status === 'completed').length;

@@ -139,15 +139,64 @@ third option:
   after reviewing the diff and confirming the change was intentional
   (e.g., a deliberate manual edit, or a migration you ran by hand).
 
+> **Known limitation — both actions currently fail for `corrupt_no_backup`.**
+> This paragraph previously implied recovery works for either degraded state.
+> It does not. Verified against a running server with a store corrupted and its
+> backups removed:
+>
+> ```
+> degraded: [{"subsystem":"workspace_goals","reason":"corrupt_no_backup", ...}]
+> POST .../recover {"resolution":"restore_backup"} -> 500 INTERNAL_ERROR
+> POST .../recover {"resolution":"accept_current"} -> 500 INTERNAL_ERROR
+> store remains degraded
+> ```
+>
+> `restore_backup` throws a plain `Error` (not an `AppError`) when no valid
+> backup exists, and `accept_current` calls `JSON.parse` on the malformed
+> content without a guard; neither is mapped by `sendError`, so both surface as
+> an opaque 500. The Security view exposes both as buttons, so an operator in
+> this state has no working repair path through the product and no useful
+> message. The corrupt bytes are still preserved as
+> `<file>.corrupt-<timestamp>` and can be repaired by hand.
+>
+> A second defect in the same path: `accept_current` performs **no shape
+> validation**. Given valid JSON of the wrong shape
+> (`{"schemaVersion":1,"records":"not-an-array"}`) it returns 200 and records
+> that hash as the new known-good baseline.
+>
+> Recovery from `tampered` — the common case, where the file is still valid
+> JSON — works and is covered by `test/integration.test.js`. Recovery from
+> `corrupt_no_backup` is **not** covered by any test, which is why this went
+> unnoticed: the existing case tampers a store while keeping it parseable.
+> Tracked as A-003 in `docs/ENGINEERING_FINDINGS.md`.
+
 Exposed via `POST /api/security/stores/:storeName/recover` (body:
 `{"resolution": "restore_backup" | "accept_current"}`) and, more
 usably, via the Security view's degraded-store banner, which shows the
 store, the reason, and both actions as separately confirmed buttons.
 Both paths record a flagged `store.recovery_performed` audit event.
 Recoverable store names: `agents`, `runs`, `workstreams`,
-`security_events`, `config_history`. The append-only audit log
-(`events`) is not in this list — see "A note on recovering the audit
-log itself," below.
+`security_events`, `config_history`, plus every Feature Onboard store —
+`workspaces`, `founder_profile`, `onboarding_state`, `yc_progress`,
+`workspace_agent_settings`, and the six workspace record stores
+(`workspace_goals`, `workspace_tasks`, `workspace_decisions`,
+`workspace_assumptions`, `workspace_experiments`, `workspace_evidence`).
+The append-only audit log (`events`) is not in this list — see "A note on
+recovering the audit log itself," below.
+
+A store that exists but was never registered here would be the one store an
+operator could not repair after corruption or tampering, so this is asserted by
+a test (`test/integration.test.js`, "every Feature Onboard store is registered
+for operator recovery") rather than left to reviewer diligence — verified to
+fail when a single store is removed from the map.
+
+Feature Onboard added no new persistence mechanics. Each of its stores is built
+on the same `createVersionedStore` seam and therefore inherits atomic writes,
+the missing/empty/populated/recovered/corrupt distinction, rotating backups,
+hash-sidecar tamper detection that never auto-rebaselines, and schema
+versioning (all currently at version 1, no migration defined). Their
+corruption/tamper events reach the audit log and Sentinel through the same
+`onStoreEvent` emitter as every other store.
 
 Verified live: tampering with `agents.json` directly on disk, confirming
 `/api/security/status` reports degraded, calling the recovery endpoint

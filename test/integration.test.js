@@ -849,6 +849,456 @@ async function run() {
     }
   });
 
+  // ---------------- Feature Onboard (Phase 3) API tests ----------------
+  // Full HTTP coverage of the workspace operating layer: workspace scoping,
+  // server-computed progress, YC, onboarding, and restart persistence.
+
+  const json = async (res) => ({ status: res.status, body: await res.json().catch(() => null) });
+  const post = (base, p, b) => fetch(`${base}${p}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) });
+  const put = (base, p, b) => fetch(`${base}${p}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) });
+
+  await check('two workspaces keep their records strictly separated over HTTP', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const a = (await json(await post(server.baseUrl, '/api/workspaces', { name: 'Alpha' }))).body;
+      const b = (await json(await post(server.baseUrl, '/api/workspaces', { name: 'Beta' }))).body;
+
+      const goalA = (await json(await post(server.baseUrl, `/api/workspaces/${a.id}/goals`, { title: 'A goal' }))).body;
+      await post(server.baseUrl, `/api/workspaces/${b.id}/goals`, { title: 'B goal' });
+
+      // list is scoped
+      const aList = (await json(await fetch(`${server.baseUrl}/api/workspaces/${a.id}/goals`))).body;
+      const bList = (await json(await fetch(`${server.baseUrl}/api/workspaces/${b.id}/goals`))).body;
+      assert.strictEqual(aList.length, 1);
+      assert.strictEqual(bList.length, 1);
+      assert.strictEqual(aList[0].title, 'A goal');
+
+      // cross-workspace GET of A's goal under B is a 404, not a leak
+      const cross = await json(await fetch(`${server.baseUrl}/api/workspaces/${b.id}/goals/${goalA.id}`));
+      assert.strictEqual(cross.status, 404);
+      // cross-workspace PUT/DELETE under B must not touch A's goal
+      assert.strictEqual((await put(server.baseUrl, `/api/workspaces/${b.id}/goals/${goalA.id}`, { title: 'hijack' })).status, 404);
+      assert.strictEqual((await fetch(`${server.baseUrl}/api/workspaces/${b.id}/goals/${goalA.id}`, { method: 'DELETE' })).status, 404);
+      const stillA = (await json(await fetch(`${server.baseUrl}/api/workspaces/${a.id}/goals/${goalA.id}`))).body;
+      assert.strictEqual(stillA.title, 'A goal');
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('workspace progress is computed server-side from milestones, not trusted from the client', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const ws = (await json(await post(server.baseUrl, '/api/workspaces', { name: 'Prog' }))).body;
+      assert.strictEqual(ws.progress.progress, null); // no milestones yet -> null, not 0
+
+      // A client trying to assert its own progress must be ignored.
+      await post(server.baseUrl, `/api/workspaces/${ws.id}/goals`, { title: 'G', progress: 99, milestones: [{ label: 'a', done: true }, { label: 'b' }] });
+      const after = (await json(await fetch(`${server.baseUrl}/api/workspaces/${ws.id}`))).body;
+      assert.strictEqual(after.progress.progress, 50); // 1 of 2 milestones, server-computed
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('YC progress updates deterministically and rejects unknown items', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const ws = (await json(await post(server.baseUrl, '/api/workspaces', { name: 'YC', ycEnabled: true }))).body;
+      const before = (await json(await fetch(`${server.baseUrl}/api/workspaces/${ws.id}/yc`))).body;
+      assert.strictEqual(before.overall, 0);
+      assert.strictEqual(before.sections.length, 4);
+
+      const updated = (await json(await put(server.baseUrl, `/api/workspaces/${ws.id}/yc`, { itemId: 'ss_enrolled', done: true }))).body;
+      assert.ok(updated.overall > 0);
+
+      const bad = await json(await put(server.baseUrl, `/api/workspaces/${ws.id}/yc`, { itemId: 'not_real', done: true }));
+      assert.strictEqual(bad.status, 400);
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('unknown workspace id is a 404 on every scoped route', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      for (const p of ['/api/workspaces/ghost', '/api/workspaces/ghost/goals', '/api/workspaces/ghost/yc', '/api/workspaces/ghost/agents']) {
+        assert.strictEqual((await fetch(`${server.baseUrl}${p}`)).status, 404, `${p} should 404`);
+      }
+      assert.strictEqual((await post(server.baseUrl, '/api/workspaces/ghost/goals', { title: 'x' })).status, 404);
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('onboarding is first-run detectable, resumable, and completable over HTTP', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      assert.strictEqual((await json(await fetch(`${server.baseUrl}/api/onboarding`))).body, null); // first run
+      await post(server.baseUrl, '/api/onboarding/start');
+      await put(server.baseUrl, '/api/onboarding', { currentStep: 'workspace', draft: { name: 'Draft Co' } });
+      const mid = (await json(await fetch(`${server.baseUrl}/api/onboarding`))).body;
+      assert.strictEqual(mid.currentStep, 'workspace');
+      assert.strictEqual(mid.draft.name, 'Draft Co');
+      assert.strictEqual((await put(server.baseUrl, '/api/onboarding', { currentStep: 'bogus' })).status, 400);
+      await post(server.baseUrl, '/api/onboarding/complete', { skipped: false });
+      assert.strictEqual((await json(await fetch(`${server.baseUrl}/api/onboarding`))).body.completed, true);
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('workspaces and their records survive a server restart, and audit events are recorded', async () => {
+    const dataDir = freshDataDir();
+    let server = startServer(dataDir);
+    let wsId;
+    try {
+      await waitForReady(server.baseUrl);
+      const ws = (await json(await post(server.baseUrl, '/api/workspaces', { name: 'Persisted' }))).body;
+      wsId = ws.id;
+      await post(server.baseUrl, `/api/workspaces/${wsId}/decisions`, { decision: 'Use JSON files', reasoning: 'single operator' });
+      // audit event exists for the workspace creation
+      const activity = (await json(await fetch(`${server.baseUrl}/api/activity?limit=200`))).body;
+      assert.ok(activity.some((e) => e.action === 'workspace.created'), 'workspace.created audit event missing');
+    } finally {
+      await stopServer(server);
+    }
+    // Restart against the same data dir.
+    server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const list = (await json(await fetch(`${server.baseUrl}/api/workspaces`))).body;
+      assert.ok(list.some((w) => w.id === wsId), 'workspace did not survive restart');
+      const decisions = (await json(await fetch(`${server.baseUrl}/api/workspaces/${wsId}/decisions`))).body;
+      assert.strictEqual(decisions.length, 1);
+      assert.strictEqual(decisions[0].decision, 'Use JSON files');
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  // R-007 — one optional-date contract, enforced at the HTTP boundary too.
+  // The store-level cases live in test/workspaceStores.test.js; this proves
+  // the API returns a stable VALIDATION_ERROR rather than a 500 or a silent
+  // accept, for every endpoint that takes an operator-supplied date.
+  await check('every optional-date API field rejects objects, arrays and junk with VALIDATION_ERROR', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const ws = (await json(await post(server.baseUrl, '/api/workspaces', { name: 'Dates' }))).body;
+
+      const cases = [
+        ['workspace targetDate', (v) => post(server.baseUrl, '/api/workspaces', { name: 'W', targetDate: v })],
+        ['goal targetDate', (v) => post(server.baseUrl, `/api/workspaces/${ws.id}/goals`, { title: 'G', targetDate: v })],
+        ['assumption reviewDate', (v) => post(server.baseUrl, `/api/workspaces/${ws.id}/assumptions`, { statement: 'A', reviewDate: v })],
+      ];
+      // {} and [] previously reached storage verbatim on the record routes and
+      // rendered to the operator as "[object Object]".
+      for (const [label, send] of cases) {
+        for (const bad of [{ evil: true }, [1, 2], 'not-a-date', 'garbage 2024', 42]) {
+          const res = await json(await send(bad));
+          assert.strictEqual(res.status, 400, `${label} must 400 on ${JSON.stringify(bad)}, got ${res.status}`);
+          assert.strictEqual(res.body.code, 'VALIDATION_ERROR', `${label} must use the stable error code`);
+          assert.ok(res.body.requestId, `${label} error must keep the standard error shape`);
+        }
+        // the good path still works, and '' still clears
+        const ok = await json(await send('2026-07-31'));
+        assert.strictEqual(ok.status, 201, `${label} must accept an ISO date`);
+        const cleared = await json(await send(''));
+        assert.strictEqual(cleared.status, 201, `${label} must accept '' as a clear`);
+      }
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  // R-006 — one request must not multiply one integrity signal.
+  //
+  // versionedStore.read() is an integrity checkpoint by design: a tampered
+  // store stays flagged on EVERY read, indefinitely, until the operator
+  // explicitly recovers it (docs/PERSISTENCE_AND_RECOVERY.md). That contract
+  // is correct and is deliberately NOT changed here. What was wrong is how
+  // many times one request read the same store: GET /api/workspaces computed
+  // progress inside a per-workspace loop, so N workspaces meant N reads, N
+  // audit events and N critical Sentinel findings from ONE hand edit.
+  //
+  // The assertion derived from that documented contract is therefore
+  // "one read per store per request", not "only ever one event": a second
+  // request legitimately re-flags, because it is a second read of a store
+  // that is still tampered. Asserting zero on the second request would be
+  // asserting that tamper detection stops working.
+  const countEvents = (dataDir, action) => {
+    const p = path.join(dataDir, 'events.jsonl');
+    if (!fs.existsSync(p)) return 0;
+    return fs.readFileSync(p, 'utf8').split('\n').filter((l) => l.includes(`"${action}"`)).length;
+  };
+
+  await check('one tampered store + one list request = one integrity event, not one per entity', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      // 5 workspaces, and a goal with milestones so progress is a real number
+      // (not null) and we can prove the fix did not change the math.
+      const ids = [];
+      for (let i = 0; i < 5; i += 1) {
+        ids.push((await json(await post(server.baseUrl, '/api/workspaces', { name: `WS${i}` }))).body.id);
+      }
+      await post(server.baseUrl, `/api/workspaces/${ids[0]}/goals`, {
+        title: 'Half done',
+        milestones: [{ label: 'a', done: true }, { label: 'b', done: false }],
+      });
+
+      const before = (await json(await fetch(`${server.baseUrl}/api/workspaces`))).body;
+      const progressBefore = Object.fromEntries(before.map((w) => [w.id, w.progress.progress]));
+      assert.strictEqual(progressBefore[ids[0]], 50, 'baseline progress must be a real 50');
+      assert.strictEqual(progressBefore[ids[1]], null, 'a workspace with no milestones stays null, not 0');
+
+      // one out-of-band edit to one store
+      const goalsFile = path.join(dataDir, 'workspace_goals.json');
+      const envelope = JSON.parse(fs.readFileSync(goalsFile, 'utf8'));
+      envelope.records[0].title = 'EDITED BY HAND';
+      fs.writeFileSync(goalsFile, JSON.stringify(envelope, null, 2));
+
+      const base = countEvents(dataDir, 'workspace_goals.tamper_detected');
+      await fetch(`${server.baseUrl}/api/workspaces`);
+      const afterOne = countEvents(dataDir, 'workspace_goals.tamper_detected') - base;
+      assert.strictEqual(afterOne, 1, `one list request over 5 workspaces must emit exactly 1 tamper event, got ${afterOne}`);
+
+      // Sentinel must see one incident, not five copies of it
+      const findings = (await json(await fetch(`${server.baseUrl}/api/security/findings`))).body;
+      const rows = (Array.isArray(findings) ? findings : findings.findings || [])
+        .filter((f) => f.ruleId === 'store_integrity_failure' && f.entityId === 'workspace_goals');
+      assert.strictEqual(rows.length, 1, `one tamper must create 1 Sentinel finding, got ${rows.length}`);
+
+      // Second request: the store is still tampered and this is a second read,
+      // so exactly one more event is the documented behavior — no suppression.
+      await fetch(`${server.baseUrl}/api/workspaces`);
+      const afterTwo = countEvents(dataDir, 'workspace_goals.tamper_detected') - base;
+      assert.strictEqual(afterTwo, 2, `a second request must re-flag exactly once, got ${afterTwo - 1} new events`);
+
+      // and the progress math is unchanged by the single-read rewrite
+      const after = (await json(await fetch(`${server.baseUrl}/api/workspaces`))).body;
+      assert.deepStrictEqual(
+        Object.fromEntries(after.map((w) => [w.id, w.progress.progress])),
+        progressBefore,
+        'grouping milestones by workspace must produce identical progress'
+      );
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('listing agents does not re-read the runs store once per agent', async () => {
+    // Same root cause, pre-existing instance found by the repo-wide search:
+    // GET /api/agents called getAgentRuns(a.id) inside the map, and each call
+    // read runs.json twice (listForAgent + summarizeForAgent), plus one
+    // workstreams.json read per agent for the workstream name.
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const ws = (await json(await post(server.baseUrl, '/api/workstreams', { name: 'WS' }))).body;
+      for (let i = 0; i < 4; i += 1) {
+        await post(server.baseUrl, '/api/agents', { name: `A${i}`, provider: 'custom', command: 'echo hi', workstreamId: ws.id });
+      }
+      const before = (await json(await fetch(`${server.baseUrl}/api/agents`))).body;
+      assert.strictEqual(before.length, 4);
+      assert.ok(before.every((a) => a.workstreamName === 'WS'), 'workstream names must still be resolved');
+
+      for (const store of ['runs', 'workstreams']) {
+        const file = path.join(dataDir, `${store}.json`);
+        const envelope = JSON.parse(fs.readFileSync(file, 'utf8'));
+        envelope.records.push({ id: `injected-${store}`, name: 'x' });
+        fs.writeFileSync(file, JSON.stringify(envelope, null, 2));
+
+        const base = countEvents(dataDir, `${store}.tamper_detected`);
+        await fetch(`${server.baseUrl}/api/agents`);
+        const delta = countEvents(dataDir, `${store}.tamper_detected`) - base;
+        assert.strictEqual(delta, 1, `one /api/agents request must read ${store}.json once, got ${delta} events`);
+      }
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  // ---- CLASS: audit bypass ----
+  //
+  // Hypothesis: every state-changing route writes at least one entry to the
+  // append-only, hash-chained audit log. Not "has an audit() call in its
+  // source" — a static scan of that gave a FALSE POSITIVE here (it read past a
+  // route body into the next route's) and would have missed the real defect.
+  // This drives every mutating route against a live server and diffs
+  // events.jsonl, which is the only evidence that counts.
+  //
+  // Found this way: the entire Sentinel operator lifecycle
+  // (acknowledge -> contain -> resolve) wrote nothing to the audit log. The
+  // transition was recorded only in the finding's own statusHistory, which
+  // lives in a mutable snapshot store rather than the tamper-evident one.
+  //
+  // A route that writes no event must be listed in NO_AUDIT with a reason.
+  await check('every state-changing route writes an audit entry (or is a documented exception)', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      const b = server.baseUrl;
+      const logFile = path.join(dataDir, 'events.jsonl');
+      const lines = () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean).length : 0);
+
+      const ws = (await json(await post(b, '/api/workspaces', { name: 'AuditCov' }))).body;
+      const goal = (await json(await post(b, `/api/workspaces/${ws.id}/goals`, { title: 'G' }))).body;
+      const agent = (await json(await post(b, '/api/agents', { name: 'AC', provider: 'custom', command: 'echo hi' }))).body;
+      const wstream = (await json(await post(b, '/api/workstreams', { name: 'WS' }))).body;
+
+      // Routes that deliberately write nothing, each with a stated reason.
+      const NO_AUDIT = {
+        'PUT /api/onboarding': 'wizard step/draft autosave — fires on every step change during first-run setup; auditing it would bury real events in setup churn. The completion of onboarding IS audited (onboarding.completed).',
+      };
+
+      const cases = [
+        ['PUT /api/profile', () => put(b, '/api/profile', { displayName: 'X' })],
+        ['POST /api/onboarding/start', () => post(b, '/api/onboarding/start', {})],
+        ['PUT /api/onboarding', () => put(b, '/api/onboarding', { currentStep: 'profile' })],
+        ['POST /api/onboarding/complete', () => post(b, '/api/onboarding/complete', { skipped: false })],
+        ['POST /api/workspaces', () => post(b, '/api/workspaces', { name: 'W2' })],
+        ['PUT /api/workspaces/:id', () => put(b, `/api/workspaces/${ws.id}`, { name: 'Renamed' })],
+        ['POST /api/workspaces/:id/archive', () => post(b, `/api/workspaces/${ws.id}/archive`, { archived: true })],
+        ['POST /api/workspaces/:id/goals', () => post(b, `/api/workspaces/${ws.id}/goals`, { title: 'G2' })],
+        ['PUT /api/workspaces/:id/goals/:gid', () => put(b, `/api/workspaces/${ws.id}/goals/${goal.id}`, { title: 'G edited' })],
+        ['DELETE /api/workspaces/:id/goals/:gid', () => fetch(`${b}/api/workspaces/${ws.id}/goals/${goal.id}`, { method: 'DELETE' })],
+        ['PUT /api/workspaces/:id/agents/:aid', () => put(b, `/api/workspaces/${ws.id}/agents/interview_agent`, { enabled: true })],
+        ['PUT /api/workspaces/:id/yc', () => put(b, `/api/workspaces/${ws.id}/yc`, { itemId: 'ss_enrolled', done: true })],
+        ['POST /api/agents', () => post(b, '/api/agents', { name: 'A2', provider: 'custom', command: 'echo x' })],
+        ['PUT /api/agents/:id', () => put(b, `/api/agents/${agent.id}`, { name: 'A renamed' })],
+        ['POST /api/workstreams', () => post(b, '/api/workstreams', { name: 'WS2' })],
+        ['PUT /api/workstreams/:id', () => put(b, `/api/workstreams/${wstream.id}`, { name: 'WS renamed' })],
+        ['POST /api/workstreams/:id/archive', () => post(b, `/api/workstreams/${wstream.id}/archive`, {})],
+        ['POST /api/workstreams/:id/unarchive', () => post(b, `/api/workstreams/${wstream.id}/unarchive`, {})],
+        ['DELETE /api/agents/:id', () => fetch(`${b}/api/agents/${agent.id}`, { method: 'DELETE' })],
+      ];
+
+      const silent = [];
+      for (const [name, call] of cases) {
+        const before = lines();
+        const res = await call();
+        // A route that errors writes no event for an uninteresting reason. If
+        // the call fails, the CASE is broken, not the audit coverage — fail
+        // loudly rather than record a false "no audit". (An earlier hand-run
+        // version of this probe reported a false finding exactly this way: a
+        // bad YC item id produced a 400 and looked like a missing audit entry.)
+        assert.ok(res.status >= 200 && res.status < 300, `${name} must succeed for this check to mean anything, got ${res.status}`);
+        if (lines() === before && !NO_AUDIT[name]) silent.push(name);
+      }
+
+      // Sentinel's operator lifecycle needs a real finding: force one by
+      // tampering a store, then walk acknowledge -> contain -> resolve.
+      const agentsFile = path.join(dataDir, 'agents.json');
+      fs.writeFileSync(agentsFile, fs.readFileSync(agentsFile, 'utf8').replace('"A2"', '"HAND EDITED"'));
+      await fetch(`${b}/api/agents`);
+      const findings = (await json(await fetch(`${b}/api/security/findings`))).body;
+      const list = Array.isArray(findings) ? findings : (findings.findings || []);
+      assert.ok(list.length > 0, 'tampering must produce a Sentinel finding for this check to mean anything');
+      for (const step of ['acknowledge', 'contain', 'resolve']) {
+        const before = lines();
+        const res = await post(b, `/api/security/findings/${list[0].id}/${step}`, { note: 'coverage' });
+        assert.strictEqual(res.status, 200, `${step} must succeed`);
+        if (lines() === before) silent.push(`POST /api/security/findings/:id/${step}`);
+      }
+
+      assert.deepStrictEqual(silent, [],
+        `these state-changing routes wrote NO audit entry and are not documented exceptions:\n  ${silent.join('\n  ')}`);
+
+      // The allowlist must not rot into an excuse for routes that no longer exist.
+      for (const [route, why] of Object.entries(NO_AUDIT)) {
+        assert.ok(cases.some(([n]) => n === route), `NO_AUDIT names "${route}", which this check never exercises`);
+        assert.ok(why && why.length > 30, `NO_AUDIT entry for "${route}" needs a real reason`);
+      }
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('every Feature Onboard store is registered for operator recovery', async () => {
+    // A newly added store that the recovery endpoint does not know about is a
+    // real gap: it would be the one store an operator could not repair after
+    // corruption or tampering. This asserts the wiring rather than trusting it,
+    // and is why docs/FEATURE_ONBOARD.md can state it as fact.
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      // Create data in every store so each has a file and a backup to restore.
+      const ws = (await json(await post(server.baseUrl, '/api/workspaces', { name: 'Recover' }))).body;
+      await put(server.baseUrl, '/api/profile', { skills: ['x'] });
+      await post(server.baseUrl, '/api/onboarding/start');
+      await put(server.baseUrl, `/api/workspaces/${ws.id}/yc`, { itemId: 'ss_enrolled', done: true });
+      await put(server.baseUrl, `/api/workspaces/${ws.id}/agents/interview_agent`, { enabled: true });
+      await post(server.baseUrl, `/api/workspaces/${ws.id}/goals`, { title: 'g' });
+      await post(server.baseUrl, `/api/workspaces/${ws.id}/tasks`, { title: 't' });
+      await post(server.baseUrl, `/api/workspaces/${ws.id}/decisions`, { decision: 'd' });
+      await post(server.baseUrl, `/api/workspaces/${ws.id}/assumptions`, { statement: 'a' });
+      await post(server.baseUrl, `/api/workspaces/${ws.id}/experiments`, { title: 'e' });
+      await post(server.baseUrl, `/api/workspaces/${ws.id}/evidence`, { summary: 's', evidenceKind: 'customer_statement' });
+
+      const storeNames = [
+        'workspaces', 'founder_profile', 'onboarding_state', 'yc_progress', 'workspace_agent_settings',
+        'workspace_goals', 'workspace_tasks', 'workspace_decisions',
+        'workspace_assumptions', 'workspace_experiments', 'workspace_evidence',
+      ];
+      for (const name of storeNames) {
+        const res = await post(server.baseUrl, `/api/security/stores/${name}/recover`, { resolution: 'restore_backup' });
+        assert.notStrictEqual(res.status, 404, `store "${name}" is not registered for recovery`);
+        assert.strictEqual(res.status, 200, `recovery of "${name}" should succeed (got ${res.status})`);
+      }
+      // and an unknown store is still rejected
+      const unknown = await post(server.baseUrl, '/api/security/stores/not_a_store/recover', { resolution: 'restore_backup' });
+      assert.strictEqual(unknown.status, 404);
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  await check('existing agent and workstream APIs still work alongside Feature Onboard', async () => {
+    const dataDir = freshDataDir();
+    const server = startServer(dataDir);
+    try {
+      await waitForReady(server.baseUrl);
+      // pre-existing endpoints unaffected by the new routes
+      const agent = (await json(await post(server.baseUrl, '/api/agents', { name: 'Legacy', provider: 'custom', command: 'echo hi' }))).body;
+      assert.ok(agent.id);
+      const ws = (await json(await post(server.baseUrl, '/api/workstreams', { name: 'Legacy WS' }))).body;
+      assert.ok(ws.id);
+      // and the new namespace coexists
+      assert.strictEqual((await fetch(`${server.baseUrl}/api/workspaces`)).status, 200);
+    } finally {
+      await stopServer(server);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   console.log(`\n${passed} passed, ${failures.length} failed`);
   if (failures.length > 0) {
     for (const f of failures) console.error(`FAILED: ${f.name}\n${f.err.stack}`);
