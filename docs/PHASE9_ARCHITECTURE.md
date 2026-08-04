@@ -733,3 +733,83 @@ failure proof, false-pass challenge, false-fail challenge.
    closable with a token, but a shell agent remains the widest blast radius in
    the system. Keeping it is defensible; it should be a decision, not a
    default.
+
+---
+
+## 20. Addendum — the verification harness (built before Slice 0)
+
+Built ahead of implementation on the operator's direction: *"Before implementing
+Slice 0, build a verification harness for the kernel itself."*
+
+A harness needs something to verify, so this also produced a **reference
+kernel** — the full stage pipeline and cross-cutting machinery, with stubbed
+effectors. The harness defines acceptance for the real effectors landing in
+Slice 0/1. Nothing here governs production agents yet; `agentManager` is not
+routed through the kernel.
+
+### Three layers, separated and enforced
+
+```
+SPECIFICATION   test/kernel/spec/       what must be true   (no require of src/)
+HARNESS         test/kernel/harness/    how to observe it   (adapter is the only bridge)
+IMPLEMENTATION  src/kernel/             the thing under test (knows neither)
+```
+
+The separation is checked **empirically** — a child process loads the spec and
+its real `require.cache` is inspected — not by scanning source text. Phase 8's
+A-009 was a source scan that reported a route as audited when it was not.
+
+### What is proven, and how
+
+| Suite | Cases | Proves |
+|---|---|---|
+| `harness.test.js` | 26 | 11 deliberately-broken kernels are each caught, on their own invariant and no other |
+| `faultMatrix.test.js` | 155 | 11 stages × 7 faults; every cell leaves every invariant holding |
+| `adversarial.test.js` | 11 | named evasion attempts are repelled and recorded |
+| `acceptance.test.js` | 23 | adding and removing a capability requires no kernel change |
+| `chaos.test.js` | 8 | 1000 seeded randomized operations preserve every invariant |
+
+The fault matrix is **derived** from `src/kernel/stages.js`, so a stage added
+later gets seven fault cases without anyone remembering to write them.
+
+### Defects the harness found (none by review)
+
+1. **[Certain] Stages were not idempotent.** Injecting `retry` at each stage
+   produced four independent defects: two admission slots taken and one
+   released, two reservations taken and one settled, the effector invoked twice
+   under one authorization, and two terminal records. Fixed structurally with a
+   once-per-transaction guard in the pipeline, so stages added later inherit it.
+
+2. **[Certain] A cap built on an estimate is not a cap.** Chaos found committed
+   spend of $5.03 against a $5.00 cap. The reservation held a point *estimate*
+   while the effector could legitimately settle higher. `estimateCostUsd`
+   became `maxCostUsd` — a declared upper bound, reserved in full — and a
+   settle above it is recorded as a contract violation rather than absorbed.
+
+3. **[Certain] A failed seal could be silent.** Faulting the audit stage left a
+   transaction recorded and executed but never sealed, with no signal anywhere.
+   The kernel now declares seal failures out of band. This is not an opt-out:
+   a kernel that skips sealing quietly emits nothing and is still caught.
+
+4. **[Certain] An invariant that read the kernel's own conclusion.** The first
+   `no_permission_leakage` compared the effect against the *recorded decision*,
+   which a kernel forcing its decision back to "allow" satisfies trivially —
+   the subject grading its own work. It now compares against the authorization
+   input. Found only by building the mutant that would defeat it.
+
+5. **[Certain] Two invariants that were one.** `no_forged_transaction_ids` could
+   not be falsified independently of `record_before_effect`. Removed rather than
+   kept as a second name for one check.
+
+### Limits, stated rather than discovered later
+
+- **[Certain]** In a single Node process nothing is truly unreachable; `require`
+  is global. The provable property is that there is **no ordinary path** to an
+  effect, plus a runtime tripwire that refuses and records the extraordinary
+  one. "Impossible to bypass" is not provable and is not claimed.
+- **[Certain]** The reservation ledger is atomic within one process only. The
+  instance lock is therefore load-bearing for the budget guarantee, not merely
+  a data-safety convenience.
+- **[High Confidence]** Chaos is stable across seeds (5 fixed seeds plus
+  randomized runs). Absence of failure at 1000 operations is not proof of
+  absence at 10^6.
