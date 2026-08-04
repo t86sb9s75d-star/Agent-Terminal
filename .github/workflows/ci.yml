@@ -66,6 +66,9 @@ jobs:
       - name: Kernel chaos (1000 seeded randomized operations)
         run: npm run test:chaos
 
+      - name: Slice 0 governance proofs
+        run: npm run test:slice0
+
       # playwright-managed Chromium. --with-deps installs the system libraries
       # the browser needs on a clean runner.
       - name: Install Chromium for browser tests

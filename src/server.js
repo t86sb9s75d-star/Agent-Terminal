@@ -16,6 +16,10 @@ const { registerFeatureOnboardRoutes, STORES: onboardStores } = require('./featu
 const sentinel = require('./sentinel');
 const systemState = require('./systemState');
 const instanceLock = require('./instanceLock');
+const ownerAuth = require('./ownerAuth');
+const constitution = require('./constitution');
+const agentBindingStore = require('./agentBindingStore');
+const { registerGovernanceRoutes } = require('./governanceApi');
 const { idempotencyMiddleware } = require('./idempotency');
 const { AppError, Codes } = require('./errors');
 const { requestIdMiddleware, actorFromRequest, SYSTEM_ACTOR, RECOVERY_ACTOR } = require('./actor');
@@ -105,6 +109,13 @@ onboardStores.founderProfile.init(onStoreEvent);
 onboardStores.onboarding.init(onStoreEvent);
 onboardStores.yc.init(onStoreEvent);
 onboardStores.agentSettings.init(onStoreEvent);
+// Slice 0 — owner authentication must exist before any route can serve, or a
+// request arriving during boot would meet an uninitialised auth module.
+// ownerAuth.assertOwner() fails closed in that window regardless; initialising
+// here removes the window entirely.
+ownerAuth.init(DATA_DIR, { error: console.error });
+agentBindingStore.init(onStoreEvent);
+constitution.init(eventLog.record);
 sentinel.init({ onEvent: onStoreEvent, eventLogRecord: eventLog.record });
 agentManager.init(broadcast);
 
@@ -548,6 +559,7 @@ app.post('/api/security/stores/:storeName/recover', (req, res) => {
 // error handler — so it can't shadow anything and its thrown errors still
 // reach the shared handler.
 registerFeatureOnboardRoutes(app, { eventLog, actorFromRequest, sendError });
+registerGovernanceRoutes(app, { eventLog, sendError, store });
 
 // Global error handler — catches anything that reaches here without going
 // through a route's own try/catch, most notably body-parser rejecting

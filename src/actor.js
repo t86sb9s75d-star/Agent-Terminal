@@ -30,8 +30,29 @@ function actorFromRequest(req) {
   };
 }
 
+// Slice 0 — the OWNER actor.
+//
+// actorFromRequest() above returns 'human_operator' for any request that
+// arrives without an X-Rucker-Client header — including a bare curl from a
+// shell agent on the same host. That is fine for describing HOW a request
+// arrived, which is all it ever claimed to do, but it must never be mistaken
+// for proof of WHO sent it.
+//
+// This actor type is different: it is only ever produced here, and every call
+// site is downstream of ownerAuth.assertOwner(). Governance writes require
+// actorType === 'owner' specifically, so an unauthenticated caller cannot
+// manufacture one even if it reaches the store function directly.
+function ownerActor(req) {
+  return {
+    actorType: 'owner',
+    actorId: 'owner',
+    triggerType: 'authenticated_owner_action',
+    requestId: (req && req.requestId) || null,
+  };
+}
+
 const SYSTEM_ACTOR = { actorType: 'system', actorId: null, triggerType: 'boot', requestId: null };
 const RECOVERY_ACTOR = { actorType: 'system_recovery', actorId: null, triggerType: 'boot', requestId: null };
 const POLICY_ACTOR = { actorType: 'policy_engine', actorId: null, triggerType: 'enforcement', requestId: null };
 
-module.exports = { requestIdMiddleware, actorFromRequest, SYSTEM_ACTOR, RECOVERY_ACTOR, POLICY_ACTOR, DASHBOARD_CLIENT_ID };
+module.exports = { requestIdMiddleware, actorFromRequest, ownerActor, SYSTEM_ACTOR, RECOVERY_ACTOR, POLICY_ACTOR, DASHBOARD_CLIENT_ID };
