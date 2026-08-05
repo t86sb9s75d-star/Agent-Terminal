@@ -274,6 +274,65 @@ function worldWithNewCapability(extra = {}) {
     world.cleanup();
   });
 
+  await check('REGISTRY: an argSchema that nothing would enforce is refused, not stored', () => {
+    const { createRegistry } = require('../../src/kernel/registry');
+    // Measured before the fix: a capability declaring
+    // { required: ['mustExist'], additionalProperties: false } was invoked with
+    // { totallyDifferent, extra } and the effector received them unchanged,
+    // decision=allow. The field was stored and never read by anything.
+    for (const declared of [{ type: 'object' }, 'a-string', 42, true, [1, 2], function () {}]) {
+      const reg = createRegistry();
+      reg.defineEffector('e', async () => ({ ok: true }));
+      assert.throws(
+        () => reg.define({ id: 'c', effector: 'e', argSchema: declared }),
+        /argument validation is not implemented/,
+        `argSchema=${typeof declared} was accepted — a declared contract that does not bind is exactly the class this project removes`
+      );
+    }
+    // Declaring NO schema is legitimate in both forms and must still work.
+    for (const [label, entry] of [
+      ['absent', { id: 'c', effector: 'e' }],
+      ['explicit null', { id: 'c', effector: 'e', argSchema: null }],
+    ]) {
+      const reg = createRegistry();
+      reg.defineEffector('e', async () => ({ ok: true }));
+      assert.doesNotThrow(() => reg.define(entry), `${label} argSchema was refused — the guard is too broad`);
+      assert.ok(!('argSchema' in reg.get('c')), 'argSchema was still written onto the entry');
+    }
+  });
+
+  await check('REGISTRY: an effector name that could never resolve is refused at definition', () => {
+    const { createRegistry } = require('../../src/kernel/registry');
+    for (const bad of [undefined, null, '', '   ', '\t\n', 123, ['e'], {}]) {
+      const reg = createRegistry();
+      reg.defineEffector('e', async () => ({ ok: true }));
+      assert.throws(
+        () => reg.define({ id: 'c', effector: bad }),
+        /must name an effector/,
+        `effector=${JSON.stringify(bad)} was accepted`
+      );
+    }
+    // A well-formed name for an effector that does not exist YET stays legal —
+    // resolveEffector fails loudly at execution by design, and that path was
+    // verified to fail closed: no effector call, sealed failed record, no
+    // stranded reservation or admission, all invariants holding.
+    const reg = createRegistry();
+    reg.defineEffector('e', async () => ({ ok: true }));
+    assert.doesNotThrow(() => reg.define({ id: 'c', effector: 'not-defined-yet' }));
+  });
+
+  await check('REGISTRY: an effector cannot be registered under an unreferenceable id', () => {
+    const { createRegistry } = require('../../src/kernel/registry');
+    for (const bad of [123, null, undefined, '', '  ', {}]) {
+      const reg = createRegistry();
+      assert.throws(
+        () => reg.defineEffector(bad, async () => ({ ok: true })),
+        /effector id must be a non-empty string/,
+        `defineEffector(${JSON.stringify(bad)}) was accepted — no capability could ever reference it`
+      );
+    }
+  });
+
   // =====================================================================
   // 3. Layer separation — Specification must not know the Implementation.
   // =====================================================================

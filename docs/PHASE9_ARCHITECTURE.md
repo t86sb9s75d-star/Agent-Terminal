@@ -430,7 +430,11 @@ artifact, or provider constraints become another unfalsifiable claim.
 
 Tools do not exist yet (F2), so they can be born behind the kernel.
 
-A tool is registered as `{ id, capability, argSchema, effector }`. Invocation
+A tool is registered as `{ id, capability, argSchema, effector }`. **`argSchema`
+does not exist yet** — the registry REFUSES a capability that declares one,
+because nothing would enforce it (see §23). It appears here as the intended
+shape for when tool-argument validation is built, and that same commit removes
+the refusal. Invocation
 is a transaction. Three rules:
 
 1. **Arguments are validated against the schema before evaluation**, so the
@@ -900,3 +904,86 @@ any result is interpreted.
 into `grep | awk` and summed the reported numbers **while ignoring the exit
 code**. A suite that died early would have produced a smaller total with no
 error raised. Totals below are taken with the exit code checked.
+
+
+---
+
+## 23. Hostile shape pass — declarative capability fields
+
+Bounded follow-up to §22, over the three remaining declarative fields.
+
+### Derived contracts
+
+| Field | Contract, from its consumers |
+|---|---|
+| `effector` | A non-empty string key into the private `effectors` Map, read by `resolveEffector`. Existence is **deliberately not** required at definition time — `resolveEffector` is documented to fail loudly at execution. |
+| `budgetClass` | Exactly `'none'` or `'metered'`; absent defaults to `'none'`. Read by the kernel's budget stage. |
+| `argSchema` | **No consumer at all.** Stored by `define()` and read by nothing. |
+
+### `budgetClass` — no defect [Certain]
+
+Every hostile value was already refused: `null`, `''`, `'METERED'`, `' metered '`,
+`0`, `true`, `[...]`, `{}`. Absent and explicit `undefined` both default to
+`'none'`. A value inherited from a prototype is accepted (destructuring reads
+the chain) and yields identical semantics — **unusual but valid**, not a defect.
+
+### `effector` — hypothesis disproven [Certain]
+
+A capability naming a **nonexistent** effector is accepted at definition, and
+this is the documented intent. Measured at execution for `'does-not-exist'`,
+`'   '` and `'__proto__'`: **decision recorded, effector never called, terminal
+record sealed as `failed`, zero outstanding reservations, zero held admissions,
+all 11 invariants holding.** It fails closed. `'__proto__'` is safe because
+`effectors` is a `Map`, not a plain object.
+
+Two genuine inconsistencies were closed, neither a security issue:
+
+- `''` was refused but `'   '` accepted, though both are equally unusable.
+- `defineEffector()` accepted a non-string id, producing an effector that no
+  capability could ever reference (since `define()` requires a string) — dead
+  weight `danglingReferences()` would report forever.
+
+### `argSchema` — confirmed defect [Certain]
+
+**A declared argument contract was stored and never enforced.** Measured: a
+capability declaring `{ type: 'object', required: ['mustExist'],
+additionalProperties: false }` was invoked with `{ totallyDifferent, extra }`.
+The effector received those arguments **unchanged**, and the decision was
+`allow`.
+
+The semantic consequence is not "validation accepted a value" — it is that an
+author can declare an argument contract, see it stored on the registry entry,
+read §9 of this document saying arguments are validated against it, and be
+wrong on all three counts.
+
+This is the same class this project has removed twice: the thirteen
+stored-preference permissions, and `requiresApproval()`, which was **deleted
+rather than renamed** because the concept itself was the misleading part.
+
+**Fix:** `define()` refuses any `argSchema` that is not absent or `null`, and no
+longer writes the field onto the entry. Absent and explicit `null` both mean
+"no schema" and remain legal. When tool-argument validation is built, the
+refusal is removed **in the same commit that adds the enforcement** — that
+coupling is what stops the field and its meaning drifting apart again.
+
+**Why no second guard:** `define()` is the only path by which a capability
+enters the registry, and nothing downstream reads `argSchema`. An additional
+layer would be duplicate coverage with no independent justification. This is
+deliberately unlike the `maxCostUsd` fix in §22, where the ledger guard is
+independently justified because `reserve()` is reachable without the registry.
+
+### Order dependence — tested, none found
+
+Field order within the entry object, property definition order, and validation
+order were all varied. The outcome is determined by the values, not their
+order. Defaulting (`budgetClass = 'none'`) happens at destructuring, before
+validation, and was confirmed to affect only the absent/`undefined` case.
+
+### Tested domain — bounded and enumerated
+
+Not "all malformed inputs". The domain was: missing, explicit `undefined`,
+`null`, empty string, whitespace-only, wrong primitive types (number, boolean,
+string), arrays, plain objects, functions, `'__proto__'`, case variants,
+surrounding whitespace, inherited-not-own properties, and well-formed-but-
+nonexistent references. Not covered: Symbols, Proxies, getters with side
+effects, and cross-realm objects.

@@ -21,18 +21,62 @@ function createRegistry() {
   // bypasses the kernel" a structural property rather than a convention:
   // code that does not hold a handle has no reference to call.
   function defineEffector(id, impl) {
+    // define() requires `effector` to be a string, so an effector registered
+    // under a non-string key is permanently unreachable — dead weight that
+    // danglingReferences() would report forever. Reject at the source.
+    if (typeof id !== 'string' || id.trim() === '') {
+      throw new Error(`effector id must be a non-empty string, got ${typeof id}`);
+    }
     if (typeof impl !== 'function') throw new Error(`effector "${id}" must be a function`);
     if (effectors.has(id)) throw new Error(`effector "${id}" is already defined`);
     effectors.set(id, impl);
   }
 
   function define(entry) {
-    const { id, effector, budgetClass = 'none', consequential = false, maxCostUsd = null, argSchema = null } = entry;
+    const { id, effector, budgetClass = 'none', consequential = false, maxCostUsd = null, argSchema } = entry;
     if (!id || typeof id !== 'string') throw new Error('capability id is required');
     if (capabilities.has(id)) throw new Error(`capability "${id}" is already defined`);
-    if (!effector || typeof effector !== 'string') throw new Error(`capability "${id}" must name an effector`);
+    if (!effector || typeof effector !== 'string' || effector.trim() === '') {
+      // '' was already rejected; '   ' was not, though it is equally unusable.
+      // Closing that inconsistency at definition time. NOTE: an effector name
+      // that is well-formed but not yet defined is DELIBERATELY still accepted
+      // — see resolveEffector — and was verified to fail closed at execution
+      // (no effector call, sealed failed record, no stranded reservation or
+      // admission, all invariants holding).
+      throw new Error(`capability "${id}" must name an effector`);
+    }
     if (!['none', 'metered'].includes(budgetClass)) {
       throw new Error(`capability "${id}" has unknown budgetClass "${budgetClass}"`);
+    }
+    // argSchema is REFUSED, not stored.
+    //
+    // It used to be accepted and written onto the entry, and NOTHING ever read
+    // it. Measured: a capability declaring
+    // `{ required: ['mustExist'], additionalProperties: false }` was invoked
+    // with `{ totallyDifferent, extra }` and the effector received those args
+    // unchanged, decision=allow. A declared argument contract that is silently
+    // unenforced is the same class this project has removed twice before — the
+    // thirteen "stored preference" permissions, and requiresApproval(), which
+    // was deleted rather than renamed because the CONCEPT was the misleading
+    // part.
+    //
+    // Refusing is the honest state: an author cannot declare a schema and
+    // believe it does something. When tool-argument validation lands (design:
+    // docs/PHASE9_ARCHITECTURE.md, tool authorization), this check is removed
+    // in the SAME commit that adds the enforcement — that coupling is what
+    // stops the field and its meaning drifting apart again.
+    //
+    // No second guard elsewhere: define() is the only way a capability enters
+    // the registry, and nothing downstream reads argSchema, so an additional
+    // layer would be duplicate coverage with no independent justification.
+    // `undefined` (absent) and `null` (explicitly no schema) are both fine —
+    // neither declares a contract. Anything else declares one that would not
+    // bind, and that is what is refused.
+    if (argSchema !== undefined && argSchema !== null) {
+      throw new Error(
+        `capability "${id}" declares an argSchema, but argument validation is not implemented — ` +
+        'nothing would enforce it. Refusing rather than storing a contract that does not bind.'
+      );
     }
     // A declared bound must be usable or absent. Found by hostile review:
     // define() validated id, effector and budgetClass but never maxCostUsd, so
@@ -75,7 +119,6 @@ function createRegistry() {
       // contract. The kernel cannot prevent that, but it detects and records
       // it (see kernel.js settle).
       maxCostUsd,
-      argSchema,
     });
   }
 
