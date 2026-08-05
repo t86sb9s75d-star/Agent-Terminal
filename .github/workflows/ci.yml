@@ -60,6 +60,12 @@ jobs:
       - name: Integration tests
         run: npm run test:integration
 
+      - name: Kernel verification harness (mutants, fault matrix, adversarial, acceptance)
+        run: npm run test:kernel
+
+      - name: Kernel chaos (1000 seeded randomized operations)
+        run: npm run test:chaos
+
       # playwright-managed Chromium. --with-deps installs the system libraries
       # the browser needs on a clean runner.
       - name: Install Chromium for browser tests
