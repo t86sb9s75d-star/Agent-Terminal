@@ -29,6 +29,8 @@ const Codes = {
   POLICY_BLOCKED: 'POLICY_BLOCKED',
   IDEMPOTENCY_CONFLICT: 'IDEMPOTENCY_CONFLICT',
   NOT_FOUND: 'NOT_FOUND',
+  // A-002 — a permission write derived from a superseded revision.
+  PERMISSION_REVISION_CONFLICT: 'PERMISSION_REVISION_CONFLICT',
 };
 
 function requireString(value, fieldName) {

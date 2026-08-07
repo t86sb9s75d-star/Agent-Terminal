@@ -464,7 +464,7 @@
                 <button class="fo-perm-toggle" data-fo-perms="${attr(a.id)}" aria-expanded="${open}" aria-controls="fo-perms-${attr(a.id)}">
                   ${open ? 'Hide' : 'Review'} permissions (${(state.catalog.capabilities || []).length})
                 </button>
-                <div id="fo-perms-${attr(a.id)}" ${open ? '' : 'hidden'}>
+                <div id="fo-perms-${attr(a.id)}" data-fo-perm-revision="${attr(String(a.permissionRevision || 0))}" ${open ? '' : 'hidden'}>
                   ${open ? permissionRows(a.id, a.effectivePermissions) : ''}
                 </div>
               </div>`;
@@ -647,14 +647,31 @@
           await api(`/api/workspaces/${state.activeWorkspaceId}/agents/${el.dataset.foAgent}`, { method: 'PUT', body: JSON.stringify({ enabled: el.checked }) });
           await loadActiveWorkspaceDetail();
         } else if (el.dataset.foPerm) {
-          // Send the WHOLE resolved map, not just the changed key. The store
-          // normalizes a partial map by filling missing keys from the
-          // least-authority default, so posting one key would silently reset
-          // every other capability on that agent.
+          // A-002. This used to spread the client's snapshot into a whole map
+          // and PUT it, so two toggles derived from the same (not-yet-
+          // refreshed) snapshot silently erased one another.
+          //
+          // The map is still sent whole — the store fills a partial map from
+          // the least-authority default, so posting one key alone would reset
+          // the others — but it now carries the revision it was derived from.
+          // A superseded revision is refused with 409 instead of overwriting,
+          // and the operator is told to retry rather than being shown a
+          // success that quietly discarded someone's change.
           const agentId = el.dataset.agent;
           const agent = (state.agents.agents || []).find((a) => a.id === agentId);
           const next = { ...(agent ? agent.effectivePermissions : {}), [el.dataset.foPerm]: el.checked };
-          await api(`/api/workspaces/${state.activeWorkspaceId}/agents/${agentId}`, { method: 'PUT', body: JSON.stringify({ permissions: next }) });
+          try {
+            await api(`/api/workspaces/${state.activeWorkspaceId}/agents/${agentId}`, {
+              method: 'PUT',
+              body: JSON.stringify({ permissions: next, expectedRevision: agent ? agent.permissionRevision : 0 }),
+            });
+          } catch (err) {
+            // Re-read so the checkbox reflects what is actually stored, rather
+            // than leaving the UI asserting a change the server refused.
+            await loadActiveWorkspaceDetail();
+            renderBusiness();
+            throw err;
+          }
           await loadActiveWorkspaceDetail();
           renderBusiness();
         } else if (el.dataset.foStatus) {

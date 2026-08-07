@@ -234,6 +234,9 @@ function registerFeatureOnboardRoutes(app, { eventLog, actorFromRequest, sendErr
         ...a,
         settings: byId[a.id] || null,
         effectivePermissions: byId[a.id] ? byId[a.id].permissions : defaultPermissionsFor(),
+        // A-002: the revision a permission write must declare. 0 means "no row
+        // stored yet", which is the correct expectation for a first write.
+        permissionRevision: byId[a.id] ? (byId[a.id].revision || 0) : 0,
       }));
       res.json({ agents, recommended: recommendationsForStage(ws.stage).map((a) => a.id) });
     } catch (err) { sendError(res, err, req); }

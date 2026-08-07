@@ -660,6 +660,61 @@ async function run() {
   const CAPABILITIES = require('../../src/permissions').CAPABILITIES;
   const RUNTIME_SUMMARY = require('../../src/permissions').RUNTIME_ENFORCEMENT_SUMMARY;
 
+  // Toggle a permission and wait for the WORK to finish, not for a duration.
+  //
+  // This replaces three waitForTimeout(500) calls. The sleeps were not merely
+  // slow — they made the test's verdict depend on machine speed, which is how
+  // A-002 stayed hidden: the client refreshes its snapshot after each write,
+  // so a sleep long enough to cover the refresh made the sequence look safe,
+  // and a sleep too short made it look flaky. Neither reading was about the
+  // defect. Here the test waits for the two observable events the client
+  // actually performs — the PUT settling and the refresh GET that follows it —
+  // so the next toggle can only start from a refreshed snapshot. Correctness
+  // for stale and concurrent clients is a separate contract, proved against
+  // the server in test/permissionConcurrency.test.js; this case proves only
+  // that ordinary sequential use through the UI is deterministic.
+  // The signal is the revision the client has RENDERED. Waiting on the network
+  // instead was itself unsound: a waitForResponse registered before the click
+  // can be satisfied by an /agents GET still in flight from an earlier step,
+  // which returns control while the client's snapshot is still the old one —
+  // it produced a 409 that looked like a product defect and was not. The
+  // rendered revision cannot be matched early, because it only advances once
+  // the write has been accepted AND the refresh has been applied to state.
+  async function togglePermission(page, boxSelector, value, agentId) {
+    const panel = `#fo-perms-${agentId}`;
+    const revOf = async () => Number(await page.getAttribute(panel, 'data-fo-perm-revision'));
+    const before = await revOf();
+
+    let refused = null;
+    page.once('response', function watch(res) {
+      try {
+        if (res.request().method() === 'PUT' && new URL(res.url()).pathname.endsWith(`/agents/${agentId}`) && !res.ok()) {
+          refused = res.status();
+        }
+      } catch { /* ignore malformed */ }
+    });
+
+    if (value) await page.check(boxSelector); else await page.uncheck(boxSelector);
+
+    try {
+      await page.waitForFunction(
+        ([sel, prev]) => {
+          const el = document.querySelector(sel);
+          return !!el && Number(el.getAttribute('data-fo-perm-revision')) > prev;
+        },
+        [panel, before],
+        { timeout: 10000 }
+      );
+    } catch (err) {
+      throw new Error(
+        `toggling ${boxSelector} never advanced the rendered permission revision past ${before}` +
+        (refused ? ` — the write was refused with ${refused}, so ordinary sequential toggling conflicts with itself` : '') +
+        ` (${err.message})`
+      );
+    }
+    return revOf();
+  }
+
   async function openPermissionsFor(page, agentId) {
     await page.click('[data-fo-tab="agents"]');
     await page.waitForSelector(`[data-fo-perms="${agentId}"]`);
@@ -702,8 +757,12 @@ async function run() {
     await page.goto(base, { waitUntil: 'networkidle' });
     await page.click('.rail-item[data-view="business"]');
     await page.waitForSelector('#fo-workspace');
+    // Registered BEFORE the change that triggers it, so the wait cannot be
+    // satisfied by a load left over from page startup.
+    const loaded = page.waitForResponse((res) =>
+      res.request().method() === 'GET' && res.url().includes(`/api/workspaces/${a.id}/agents`));
     await page.selectOption('#fo-workspace', a.id);
-    await page.waitForTimeout(300);
+    await loaded;
     await openPermissionsFor(page, 'interview_agent');
 
     // Two capabilities, both moved AWAY from their defaults, changed one after
@@ -719,13 +778,10 @@ async function run() {
     assert.strictEqual(await page.isChecked(editBox), false, 'edit_files must start off (least authority)');
     assert.strictEqual(await page.isChecked(readBox), true, 'read_workspace_data starts on so the agent can function');
 
-    await page.check(editBox);
-    await page.waitForTimeout(500);
-    await page.check(cmdBox);
-    await page.waitForTimeout(500);
+    await togglePermission(page, editBox, true, 'interview_agent');
+    await togglePermission(page, cmdBox, true, 'interview_agent');
     // and revoke one that starts ON, so a default-fill is detectable there too
-    await page.uncheck(readBox);
-    await page.waitForTimeout(500);
+    await togglePermission(page, readBox, false, 'interview_agent');
 
     // survives a full reload, read back from disk
     await page.reload({ waitUntil: 'networkidle' });
