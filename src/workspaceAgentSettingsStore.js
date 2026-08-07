@@ -61,6 +61,20 @@ function normalizeConfig(config) {
 }
 function writeAll(records) { getStore().write(records); }
 
+// Do two permission maps describe the same authority?
+//
+// Compared over the UNION of keys, not one map's keys, so a row stored before
+// a capability was added to the vocabulary is treated as differing from a map
+// that names it — rather than comparing only the older, shorter key set and
+// concluding nothing changed.
+function samePermissions(a, b) {
+  const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
+  for (const k of keys) {
+    if (Boolean(a && a[k]) !== Boolean(b && b[k])) return false;
+  }
+  return true;
+}
+
 // All settings rows for a workspace (scoped read).
 function listForWorkspace(workspaceId) {
   const wsId = requireString(workspaceId, 'workspaceId');
@@ -111,6 +125,19 @@ function upsert(workspaceId, agentId, { enabled, permissions, config, recommende
   // that was never the problem. Both paths refuse the write, so ordering costs
   // no safety — it only decides which sentence the operator reads.
   const nextPermissions = permissions !== undefined ? normalizePermissions(permissions) : null;
+
+  // Does this write actually change the granted authority?
+  //
+  // The comparison is against the EFFECTIVE permissions — for a row that does
+  // not exist yet that is the least-authority default, which is exactly what
+  // GET .../agents already reported to the client. So a client that submits
+  // the default map for an agent with no stored row has changed nothing, sees
+  // the revision it already held, and the row is still created (its `enabled`
+  // and `config` fields are real state worth persisting). The alternative —
+  // treating row creation as a change because an object came into existence —
+  // would make the revision report storage mechanics rather than authority.
+  const currentEffective = existing ? existing.permissions : defaultPermissionsFor();
+  const permissionsChanged = nextPermissions !== null && !samePermissions(nextPermissions, currentEffective);
 
   // The conflict check. Read and write happen in this one synchronous block
   // with no await between them, so within this process the check-then-write is
@@ -166,10 +193,15 @@ function upsert(workspaceId, agentId, { enabled, permissions, config, recommende
     recommendedStage: recommendedStage !== undefined ? recommendedStage : (existing ? existing.recommendedStage : null),
     createdAt: existing ? existing.createdAt : now,
     updatedAt: now,
-    // Advances only when permissions actually change, so unrelated writes
-    // (enabling an agent, editing config) never invalidate a client's
-    // permission snapshot.
-    revision: permissions !== undefined ? currentRevision + 1 : currentRevision,
+    // Advances only when the granted authority actually changes.
+    //
+    // Keyed on the RESULTING STATE, not on the request's shape. Advancing for
+    // every permission-shaped write would let a request that changes nothing
+    // age another client's snapshot: A and B both read revision R, A re-submits
+    // the map already stored, and B's real change is then refused as stale by
+    // an operation that granted and revoked nothing. Unrelated writes
+    // (enabling an agent, editing config) never advance it either.
+    revision: permissionsChanged ? currentRevision + 1 : currentRevision,
   };
 
   if (idx === -1) records.push(row); else records[idx] = row;

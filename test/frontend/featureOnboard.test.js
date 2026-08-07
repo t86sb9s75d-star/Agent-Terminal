@@ -664,15 +664,10 @@ async function run() {
   //
   // This replaces three waitForTimeout(500) calls. The sleeps were not merely
   // slow — they made the test's verdict depend on machine speed, which is how
-  // A-002 stayed hidden: the client refreshes its snapshot after each write,
-  // so a sleep long enough to cover the refresh made the sequence look safe,
-  // and a sleep too short made it look flaky. Neither reading was about the
-  // defect. Here the test waits for the two observable events the client
-  // actually performs — the PUT settling and the refresh GET that follows it —
-  // so the next toggle can only start from a refreshed snapshot. Correctness
-  // for stale and concurrent clients is a separate contract, proved against
-  // the server in test/permissionConcurrency.test.js; this case proves only
-  // that ordinary sequential use through the UI is deterministic.
+  // A-002 stayed hidden: a sleep long enough to cover the client's refresh made
+  // the sequence look safe, a shorter one made it look flaky, and neither
+  // reading was about the defect.
+  //
   // The signal is the revision the client has RENDERED. Waiting on the network
   // instead was itself unsound: a waitForResponse registered before the click
   // can be satisfied by an /agents GET still in flight from an earlier step,
@@ -680,37 +675,63 @@ async function run() {
   // it produced a 409 that looked like a product defect and was not. The
   // rendered revision cannot be matched early, because it only advances once
   // the write has been accepted AND the refresh has been applied to state.
+  //
+  // Correctness for stale and concurrent clients is a separate contract,
+  // proved against the server in test/permissionConcurrency.test.js. This case
+  // proves only that ordinary sequential use through the UI is deterministic.
   async function togglePermission(page, boxSelector, value, agentId) {
     const panel = `#fo-perms-${agentId}`;
     const revOf = async () => Number(await page.getAttribute(panel, 'data-fo-perm-revision'));
     const before = await revOf();
 
+    // Listen until the matching PUT arrives, then unregister. This used to be
+    // page.once(), which is consumed by whichever response lands first — any
+    // unrelated GET would eat the one shot and leave the diagnostic reporting
+    // "no refusal" even when the write had in fact been refused. The wait below
+    // still failed correctly; it was the EXPLANATION that could be wrong, which
+    // is its own kind of defect when the explanation is what gets acted on.
     let refused = null;
-    page.once('response', function watch(res) {
+    let sawWrite = false;
+    const onResponse = (res) => {
       try {
-        if (res.request().method() === 'PUT' && new URL(res.url()).pathname.endsWith(`/agents/${agentId}`) && !res.ok()) {
-          refused = res.status();
-        }
-      } catch { /* ignore malformed */ }
-    });
-
-    if (value) await page.check(boxSelector); else await page.uncheck(boxSelector);
+        if (res.request().method() !== 'PUT') return;
+        if (!new URL(res.url()).pathname.endsWith(`/agents/${agentId}`)) return;
+        sawWrite = true;
+        if (!res.ok()) refused = res.status();
+        page.off('response', onResponse);
+      } catch { /* a malformed URL is not the write we are waiting for */ }
+    };
+    page.on('response', onResponse);
 
     try {
-      await page.waitForFunction(
-        ([sel, prev]) => {
-          const el = document.querySelector(sel);
-          return !!el && Number(el.getAttribute('data-fo-perm-revision')) > prev;
-        },
-        [panel, before],
-        { timeout: 10000 }
-      );
-    } catch (err) {
-      throw new Error(
-        `toggling ${boxSelector} never advanced the rendered permission revision past ${before}` +
-        (refused ? ` — the write was refused with ${refused}, so ordinary sequential toggling conflicts with itself` : '') +
-        ` (${err.message})`
-      );
+      if (value) await page.check(boxSelector); else await page.uncheck(boxSelector);
+
+      try {
+        await page.waitForFunction(
+          ([sel, prev]) => {
+            const el = document.querySelector(sel);
+            return !!el && Number(el.getAttribute('data-fo-perm-revision')) > prev;
+          },
+          [panel, before],
+          { timeout: 10000 }
+        );
+      } catch (err) {
+        // Three distinguishable causes, because "it didn't advance" alone
+        // sends the reader to the wrong place.
+        let cause;
+        if (refused !== null) {
+          cause = `the write was REFUSED with ${refused}, so ordinary sequential toggling conflicts with itself`;
+        } else if (!sawWrite) {
+          cause = 'NO permission write was issued at all — the toggle is not wired to the API';
+        } else {
+          cause = 'the write was ACCEPTED but the client never re-rendered a newer revision — it is not refreshing after a write';
+        }
+        throw new Error(
+          `toggling ${boxSelector} never advanced the rendered permission revision past ${before}: ${cause} (${err.message})`
+        );
+      }
+    } finally {
+      page.off('response', onResponse);
     }
     return revOf();
   }
