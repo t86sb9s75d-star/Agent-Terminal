@@ -786,13 +786,24 @@ async function run() {
     await loaded;
     await openPermissionsFor(page, 'interview_agent');
 
-    // Two capabilities, both moved AWAY from their defaults, changed one after
-    // the other. Asserting on values that happen to equal the default proves
-    // nothing: the store fills missing keys from defaultPermissionsFor(), so a
-    // client that posts only the changed key still produces the default value
-    // for everything else and a weaker version of this test passes. Granting
-    // edit_files and THEN run_commands is what detects it — under a partial
-    // send the second write resets the first back to off.
+    // Two capabilities moved AWAY from their defaults, changed one after the
+    // other, plus a revocation of one that starts ON. Asserting on values that
+    // happen to equal the default would prove nothing — a broken write that
+    // produced defaults would look identical to a correct one.
+    //
+    // This comment used to say the sequence detects a partial send, because
+    // omitted keys were refilled from defaultPermissionsFor() and the second
+    // write would reset the first. That is no longer true, and the claim is
+    // removed rather than left to mislead: permission writes are now a PATCH,
+    // so a client sending only the changed key is correct by construction.
+    // Verified by mutation — making this client send only the changed key no
+    // longer fails this test, and should not.
+    //
+    // What this case still proves is the UI contract: ordinary sequential
+    // toggling through the browser persists every change, survives a reload,
+    // and reads back from disk. The stale/concurrent contract is proved
+    // against the server in test/permissionConcurrency.test.js, and the
+    // vocabulary contract in test/permissionVocabulary.test.js.
     const editBox = '#fo-perms-interview_agent [data-fo-perm="edit_files"]';
     const cmdBox = '#fo-perms-interview_agent [data-fo-perm="run_commands"]';
     const readBox = '#fo-perms-interview_agent [data-fo-perm="read_workspace_data"]';

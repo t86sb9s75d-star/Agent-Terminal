@@ -651,17 +651,23 @@
           // and PUT it, so two toggles derived from the same (not-yet-
           // refreshed) snapshot silently erased one another.
           //
-          // The map is still sent whole, and that is load-bearing: a permission
-          // write is FULL REPLACEMENT, and the store fills any key the caller
-          // omits from defaultPermissionsFor(). That is not "resets the others
-          // to off" — five capabilities default to ON, so a partial write would
-          // silently REINSTATE a capability the operator had revoked as well as
-          // dropping ones they had granted. Sending the whole map is what keeps
-          // this path correct; it now also carries the revision it was derived
-          // from.
-          // A superseded revision is refused with 409 instead of overwriting,
-          // and the operator is told to retry rather than being shown a
-          // success that quietly discarded someone's change.
+          // The write carries the revision it was derived from. A superseded
+          // revision is refused with 409 instead of overwriting, and the
+          // operator is told to retry rather than being shown a success that
+          // quietly discarded someone's change.
+          //
+          // A permission write is a PATCH: the server keeps the current
+          // effective value of every capability the request does not name, {}
+          // is an explicit no-op, and a null map is refused. So sending the
+          // whole map is legal — a full map is simply a patch naming every
+          // capability — but it is no longer what keeps this path correct.
+          // Omitting a key is safe by construction now, which was not true
+          // before: omitted keys used to be refilled from
+          // defaultPermissionsFor(), and five capabilities default to ON, so a
+          // partial write REINSTATED capabilities the operator had revoked as
+          // well as dropping ones they had granted. Spreading the snapshot is
+          // kept because it is the natural shape for a checkbox grid, not
+          // because correctness depends on it.
           const agentId = el.dataset.agent;
           const agent = (state.agents.agents || []).find((a) => a.id === agentId);
           const next = { ...(agent ? agent.effectivePermissions : {}), [el.dataset.foPerm]: el.checked };
