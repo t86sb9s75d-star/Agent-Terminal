@@ -497,6 +497,144 @@ function assertUnchanged(before, after, label, expectations = {}) {
   });
 
   // ================================================================
+  // PATCH SEMANTICS — omission changes nothing
+  // ================================================================
+  //
+  // Under the previous FULL-REPLACEMENT rule any key the caller omitted was
+  // refilled from defaultPermissionsFor(). Five capabilities default to ON, so
+  // omission neither preserved nor cleared — it RESET. Measured at the CURRENT
+  // revision, sending { spend_money: true } alone flipped a deliberate
+  // read_workspace_data=false back to true and dropped a granted
+  // edit_files=true, with HTTP 200. Optimistic concurrency could not help:
+  // that caller was not stale.
+
+  // A deliberately mixed state: a default-ON capability revoked, a default-OFF
+  // capability granted. Any reset-to-defaults is visible in BOTH directions.
+  async function mixedState(label) {
+    const ws = await freshWorkspace(label);
+    const s0 = await readRow(ws);
+    assert.strictEqual(s0.perms[CAP_C], true, 'precondition: CAP_C must default ON');
+    assert.strictEqual(s0.perms[CAP_A], false, 'precondition: CAP_A must default OFF');
+    assertAccepted(await putFrom(ws, s0, { [CAP_C]: false, [CAP_A]: true }), `${label} setup`);
+    const s = await readRow(ws);
+    assert.strictEqual(s.perms[CAP_C], false, 'setup: the revocation did not persist');
+    assert.strictEqual(s.perms[CAP_A], true, 'setup: the grant did not persist');
+    return { ws, state: s };
+  }
+  // A patch names ONLY what it intends to change.
+  const patch = (ws, snapshot, perms) => api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, {
+    permissions: perms, expectedRevision: snapshot.rev,
+  });
+
+  await check('PATCH: a capability the caller did not name is preserved, in both directions', async () => {
+    const { ws, state } = await mixedState('patch-omit');
+    const r = await patch(ws, state, { [CAP_C_FALSE]: true });
+    assertAccepted(r, 'a single-key patch');
+
+    const after = await readRow(ws);
+    assert.strictEqual(after.perms[CAP_C_FALSE], true, 'the named capability did not change');
+    assert.strictEqual(
+      after.perms[CAP_C], false,
+      `omitting ${CAP_C} REINSTATED it (${state.perms[CAP_C]} -> ${after.perms[CAP_C]}) — a caller that ` +
+      'named one capability silently undid an unrelated revocation'
+    );
+    assert.strictEqual(
+      after.perms[CAP_A], true,
+      `omitting ${CAP_A} DROPPED it (${state.perms[CAP_A]} -> ${after.perms[CAP_A]}) — a caller that named ` +
+      'one capability silently discarded an unrelated grant'
+    );
+    assert.strictEqual(after.rev, state.rev + 1, 'one real change must advance the revision exactly once');
+  });
+
+  await check('PATCH: an empty patch is an accepted no-op and does not advance the revision', async () => {
+    const { ws, state } = await mixedState('patch-empty');
+    const r = await patch(ws, state, {});
+    assertAccepted(r, 'an empty patch');
+    const after = await readRow(ws);
+    assert.strictEqual(after.perms[CAP_C], false, 'an empty patch reinstated a revoked capability');
+    assert.strictEqual(after.perms[CAP_A], true, 'an empty patch dropped a granted capability');
+    assert.strictEqual(after.rev, state.rev, `an empty patch advanced the revision ${state.rev} -> ${after.rev}`);
+  });
+
+  await check('PATCH: re-stating a value already in force changes nothing and does not advance the revision', async () => {
+    const { ws, state } = await mixedState('patch-same');
+    assertAccepted(await patch(ws, state, { [CAP_A]: true }), 'a same-value patch');
+    const after = await readRow(ws);
+    assert.strictEqual(after.rev, state.rev, 'a patch that changed no authority advanced the revision');
+    assert.strictEqual(after.perms[CAP_C], false, 'a same-value patch disturbed another capability');
+  });
+
+  await check('PATCH: permissions:null is REFUSED, at a current revision and a stale one', async () => {
+    // null used to mean "reset every capability to its default", which
+    // silently granted the five that default to on. It is a malformed value,
+    // not a way of saying "no opinion" — that is what omitting the field means.
+    for (const [label, revOf] of [['current revision', (s) => s.rev], ['stale revision', () => 0]]) {
+      const { ws, state } = await mixedState('patch-null');
+      const r = await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, {
+        permissions: null, expectedRevision: revOf(state),
+      });
+      assert.strictEqual(r.status, 400, `${label}: permissions:null returned ${r.status} ${JSON.stringify(r.body)}`);
+      assert.strictEqual(r.body && r.body.code, 'VALIDATION_ERROR', `${label}: refused, but not as a validation error`);
+      assert.match(String(r.body.error), /must not be null/, `${label}: the refusal must name the null`);
+      assertUnchanged(state, await readRow(ws), `permissions:null (${label})`, { [CAP_C]: false, [CAP_A]: true });
+    }
+  });
+
+  await check('PATCH: omitting the permissions FIELD leaves permissions alone', async () => {
+    // Distinct from null on purpose: absence means "this write is not about
+    // permissions", which is exactly what the enabled/config path needs.
+    const { ws, state } = await mixedState('patch-absent');
+    assertAccepted(await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: true }), 'a non-permission write');
+    const after = await readRow(ws);
+    assert.strictEqual(after.perms[CAP_C], false, 'an unrelated write reinstated a revoked capability');
+    assert.strictEqual(after.perms[CAP_A], true, 'an unrelated write dropped a granted capability');
+    assert.strictEqual(after.rev, state.rev, 'an unrelated write advanced the permission revision');
+  });
+
+  await check('PATCH: a stale partial patch is refused and applies nothing', async () => {
+    const { ws, state } = await mixedState('patch-stale');
+    assertAccepted(await patch(ws, state, { [CAP_B]: true }), 'the write that makes the snapshot stale');
+    const before = await readRow(ws);
+
+    const r = await patch(ws, state, { [CAP_C_FALSE]: true });   // state is now superseded
+    assertConflict(r, 'a stale partial patch');
+    assertUnchanged(before, await readRow(ws), 'a stale partial patch', {
+      [CAP_C_FALSE]: false, [CAP_B]: true, [CAP_C]: false, [CAP_A]: true,
+    });
+  });
+
+  await check('PATCH: one bad key rejects the whole patch — no valid key is partially applied', async () => {
+    const { ws, state } = await mixedState('patch-atomic');
+    for (const [label, perms, expected] of [
+      ['a malformed value alongside a valid one', { [CAP_C_FALSE]: true, [CAP_B]: 'yes' }, /must be true or false/],
+      ['an unknown key alongside a valid one', { [CAP_C_FALSE]: true, made_up_capability: true }, /unknown permission capability/],
+    ]) {
+      const before = await readRow(ws);
+      const r = await patch(ws, before, perms);
+      assert.strictEqual(r.status, 400, `${label}: expected 400, got ${r.status} ${JSON.stringify(r.body)}`);
+      assert.match(String(r.body && r.body.error), expected, `${label}: wrong diagnosis`);
+      const after = await readRow(ws);
+      assert.strictEqual(
+        after.perms[CAP_C_FALSE], false,
+        `${label}: the VALID key in the rejected patch was applied anyway — a patch must be all or nothing`
+      );
+      assertUnchanged(before, after, label, { [CAP_C]: false, [CAP_A]: true });
+    }
+  });
+
+  await check('PATCH: a whole-map write still works — the frontend sends every current key', async () => {
+    // Backward compatibility for the only production caller. A full map is
+    // simply a patch that names every capability.
+    const { ws, state } = await mixedState('patch-full');
+    assertAccepted(await putFrom(ws, state, { [CAP_C_FALSE]: true }), 'a whole-map write');
+    const after = await readRow(ws);
+    assert.strictEqual(after.perms[CAP_C_FALSE], true, 'the whole-map write did not take effect');
+    assert.strictEqual(after.perms[CAP_C], false, 'the whole-map write lost a revocation');
+    assert.strictEqual(after.perms[CAP_A], true, 'the whole-map write lost a grant');
+    assert.strictEqual(after.rev, state.rev + 1, 'one real change must advance the revision exactly once');
+  });
+
+  // ================================================================
   // VALUE TYPES — the authority boundary does not guess
   // ================================================================
   await check('TYPES: literal booleans are accepted, both directions', async () => {

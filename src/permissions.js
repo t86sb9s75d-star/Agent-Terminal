@@ -119,41 +119,88 @@ function describeValue(value) {
   return `a ${t}`;
 }
 
-// Validate and normalize an operator-supplied permission map.
+// THE CANONICAL EFFECTIVE-AUTHORITY RULE. One operation answers "given the
+// current vocabulary and a persisted row, what authority is actually in
+// effect?", and both the read path (GET .../agents) and the write path use it.
+//
+// There used to be two incompatible rules for the same question:
+//   READ  an existing row -> the raw stored map, whatever keys it happened to have
+//   WRITE an omitted key  -> defaultPermissionsFor()
+// which is why a capability added to the vocabulary after a row was stored read
+// as OFF, rendered unchecked, and then became ON the first time anything else
+// was written. The operator saw one value and an unrelated write materialised
+// another. That is the split this function exists to remove.
+//
+//   effective = defaults for the CURRENT vocabulary
+//               overlaid with persisted values for keys still in the vocabulary
+//
+// Two consequences, both deliberate:
+//   - a key the vocabulary no longer defines is IGNORED. It cannot linger as
+//     ghost authority, and it cannot leak back out of a read and be echoed into
+//     a write. (Measured before this: removing a capability made every
+//     subsequent permission write fail 400, because the client faithfully sent
+//     back the unknown key it had just been given.)
+//   - a persisted value that is not a literal boolean falls back to the
+//     capability's default rather than being coerced. Only a tampered store can
+//     produce one; guessing permissively there is the same mistake as coercing
+//     at the API boundary.
+function resolveEffectivePermissions(stored) {
+  const out = defaultPermissionsFor();
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return out;
+  for (const cap of CAPABILITIES) {
+    const v = stored[cap.key];
+    if (v === true || v === false) out[cap.key] = v;
+  }
+  return out;
+}
+
+// Apply an operator-supplied permission PATCH to the current effective
+// authority, validating every supplied value.
+//
+// PATCH, NOT REPLACEMENT — and this is the load-bearing decision. Under the
+// previous full-replacement rule, any key the caller omitted was refilled from
+// defaultPermissionsFor(). Five capabilities default to ON, so "omitted" did
+// not mean "unchanged" and did not even mean "off": measured through the HTTP
+// API at the CURRENT revision, sending { spend_money: true } alone flipped
+// read_workspace_data from a deliberate false back to true (widening) and
+// dropped a granted edit_files back to false (narrowing), with HTTP 200. The
+// revision check could not help — that caller was not stale, it was complete
+// and current. Omission now changes nothing.
 //
 // VALUES MUST BE LITERAL BOOLEANS. This used to be `Boolean(value)`, and a
 // permission boundary is the wrong place for JavaScript truthiness. Measured
-// through the HTTP API before this was changed, every one of these was stored
-// as a GRANT of a consequential capability that defaults to false:
+// before that changed, every one of these was stored as a GRANT of a
+// consequential capability that defaults to false:
 //
 //   "false" -> true      "0" -> true       [] -> true        {} -> true
 //   [false] -> true      " " -> true       -1 -> true        1.5 -> true
 //
-// The direction of failure is what makes it unacceptable: a caller trying to
-// REVOKE by sending the string "false" GRANTED instead. Coercion cannot
-// distinguish "the client serialised a boolean as a string" from "the client
-// sent garbage", and guessing in the permissive direction on an authority
-// boundary is the wrong default. Malformed values now fail closed.
+// A caller trying to REVOKE by sending the string "false" GRANTED instead.
 //
-// No stored permission is consulted by the runtime today (see the note at the
-// top of this file), so this was not a live authorization bypass — it was a
-// boundary that would have become one the moment these values started
-// governing execution.
-//
-// Unknown keys are still rejected, so a typo cannot silently create something
-// that looks granted, and missing keys still fall back to the conservative
-// default — see the FULL-REPLACEMENT note in workspaceAgentSettingsStore.
-function normalizePermissions(input) {
+// `null` is REFUSED rather than treated as "no opinion". A caller that wants to
+// change nothing omits the field entirely (or sends {}); a caller that sends an
+// explicit null has produced it by accident — from an unset variable or a
+// serialiser — and before this it silently reset the whole map to defaults.
+// Those two intents are not the same and must not share a code path.
+function applyPermissionPatch(patch, currentEffective) {
   const { AppError, Codes } = require('./errors');
-  const out = defaultPermissionsFor();
-  if (input === undefined || input === null) return out;
+  const out = { ...resolveEffectivePermissions(currentEffective) };
+  if (patch === null) {
+    throw new AppError(
+      Codes.VALIDATION_ERROR,
+      'permissions must not be null. Omit the field to leave permissions unchanged, or send {} for an ' +
+      'explicit no-op — a null used to reset every capability to its default, which silently granted ' +
+      'the five that default to on.'
+    );
+  }
+  if (patch === undefined) return out;
   // Arrays are objects; without this an array's indices become "keys" and the
   // caller is told `unknown permission capability: 0`, which describes the
   // symptom rather than the mistake.
-  if (typeof input !== 'object' || Array.isArray(input)) {
+  if (typeof patch !== 'object' || Array.isArray(patch)) {
     throw new AppError(Codes.VALIDATION_ERROR, 'permissions must be an object of capability -> boolean');
   }
-  for (const [key, value] of Object.entries(input)) {
+  for (const [key, value] of Object.entries(patch)) {
     if (!isValidCapability(key)) {
       throw new AppError(Codes.VALIDATION_ERROR, `unknown permission capability: ${key}`);
     }
@@ -189,6 +236,7 @@ module.exports = {
   RUNTIME_ENFORCEMENT_SUMMARY,
   isValidCapability,
   defaultPermissionsFor,
-  normalizePermissions,
+  resolveEffectivePermissions,
+  applyPermissionPatch,
   isConsequential,
 };

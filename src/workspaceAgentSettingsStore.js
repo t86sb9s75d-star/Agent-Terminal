@@ -15,7 +15,7 @@ const path = require('path');
 const { createVersionedStore } = require('./persistence/versionedStore');
 const { AppError, Codes, requireString } = require('./errors');
 const { isValidCatalogAgent } = require('./agentCatalog');
-const { defaultPermissionsFor, normalizePermissions } = require('./permissions');
+const { defaultPermissionsFor, resolveEffectivePermissions, applyPermissionPatch } = require('./permissions');
 
 const DATA_DIR = process.env.RUCKER_DATA_DIR || path.join(__dirname, '..', 'data');
 const SCHEMA_VERSION = 1;
@@ -119,24 +119,28 @@ function upsert(workspaceId, agentId, { enabled, permissions, config, recommende
   const now = new Date().toISOString();
   const currentRevision = existing ? (existing.revision || 0) : 0;
 
-  // Vocabulary BEFORE concurrency, deliberately. A caller who misspells a
-  // capability has a bug in the request, not a conflict with another writer,
-  // and telling them "revision 3 is current" would send them to re-read state
-  // that was never the problem. Both paths refuse the write, so ordering costs
-  // no safety — it only decides which sentence the operator reads.
-  const nextPermissions = permissions !== undefined ? normalizePermissions(permissions) : null;
+  // THE ONE effective-authority reading, used for the comparison below and as
+  // the base the patch is applied to. Deriving it here rather than reading the
+  // raw stored map is what keeps this path and GET .../agents in agreement
+  // about what an old row means under the current vocabulary.
+  const currentEffective = resolveEffectivePermissions(existing ? existing.permissions : null);
 
-  // Does this write actually change the granted authority?
-  //
-  // The comparison is against the EFFECTIVE permissions — for a row that does
-  // not exist yet that is the least-authority default, which is exactly what
-  // GET .../agents already reported to the client. So a client that submits
-  // the default map for an agent with no stored row has changed nothing, sees
-  // the revision it already held, and the row is still created (its `enabled`
-  // and `config` fields are real state worth persisting). The alternative —
-  // treating row creation as a change because an object came into existence —
-  // would make the revision report storage mechanics rather than authority.
-  const currentEffective = existing ? existing.permissions : defaultPermissionsFor();
+  // Vocabulary and value types BEFORE concurrency, deliberately. A caller who
+  // misspells a capability or sends the string "false" has a bug in the
+  // request, not a conflict with another writer; telling them "revision 3 is
+  // current" would send them to re-read state that was never the problem and
+  // retry forever. Both paths refuse the write, so ordering costs no safety —
+  // it only decides which sentence the operator reads.
+  const nextPermissions = permissions !== undefined
+    ? applyPermissionPatch(permissions, currentEffective)
+    : null;
+
+  // Does this write actually change the granted authority? Keyed on the
+  // resulting effective state, never on the request's shape — a patch that
+  // re-states values already in force, or an empty patch, must not age another
+  // client's snapshot. For an agent with no stored row the comparison base is
+  // the least-authority default, which is exactly what GET already reported,
+  // so creating the row is not itself an authority change.
   const permissionsChanged = nextPermissions !== null && !samePermissions(nextPermissions, currentEffective);
 
   // The conflict check. Read and write happen in this one synchronous block
@@ -184,11 +188,12 @@ function upsert(workspaceId, agentId, { enabled, permissions, config, recommende
     workspaceId: wsId,
     agentId,
     enabled: enabled !== undefined ? Boolean(enabled) : (existing ? existing.enabled : false),
-    // normalizePermissions (applied above) rejects unknown keys, coerces to
-    // booleans, and fills missing keys from the least-authority default.
-    permissions: nextPermissions !== null
-      ? nextPermissions
-      : (existing ? existing.permissions : defaultPermissionsFor()),
+    // Always a complete, resolved map for the CURRENT vocabulary: the patch
+    // applied on top of the resolved current authority, or — when this write
+    // does not touch permissions — the resolved current authority itself. That
+    // second branch is what quietly drops a key the vocabulary no longer
+    // defines instead of carrying it forward as ghost authority.
+    permissions: nextPermissions !== null ? nextPermissions : currentEffective,
     config: config !== undefined ? normalizeConfig(config) : (existing ? existing.config : {}),
     recommendedStage: recommendedStage !== undefined ? recommendedStage : (existing ? existing.recommendedStage : null),
     createdAt: existing ? existing.createdAt : now,

@@ -126,48 +126,92 @@ check('no capability claims its stored value gates anything', () => {
   assert.match(permissions.RUNTIME_ENFORCEMENT_SUMMARY, /recorded, not what an agent can do/);
 });
 
-check('normalizePermissions rejects unknown capabilities', () => {
-  assert.throws(() => permissions.normalizePermissions({ made_up_power: true }), /unknown permission/);
+check('applyPermissionPatch rejects unknown capabilities', () => {
+  assert.throws(() => permissions.applyPermissionPatch({ made_up_power: true }, {}), /unknown permission/);
 });
 
-// This case used to read `normalizePermissions coerces to booleans and fills
+// This block used to read `normalizePermissions coerces to booleans and fills
 // defaults` and asserted `{ spend_money: 1 }` becomes true. It passed, which is
 // how an unsafe contract survives review: it had a green test defending it.
 // Coercion on an authority boundary fails in the widening direction — measured
 // through the HTTP API, "false", "0", [] and {} all stored a GRANT of a
-// capability that defaults to false. The fill-from-default half was always
-// correct and is kept.
-check('normalizePermissions requires literal booleans and fills defaults', () => {
-  const norm = permissions.normalizePermissions({ spend_money: true });
-  assert.strictEqual(norm.spend_money, true);
-  assert.strictEqual(norm.contact_people, false); // filled from conservative default
+// capability that defaults to false.
+check('applyPermissionPatch requires literal booleans', () => {
+  const base = permissions.defaultPermissionsFor();
+  const patched = permissions.applyPermissionPatch({ spend_money: true }, base);
+  assert.strictEqual(patched.spend_money, true);
 
   // The specific value this test used to bless.
-  assert.throws(() => permissions.normalizePermissions({ spend_money: 1 }), /must be true or false/);
+  assert.throws(() => permissions.applyPermissionPatch({ spend_money: 1 }, base), /must be true or false/);
   // The one that makes coercion indefensible: a caller trying to REVOKE grants.
-  assert.throws(() => permissions.normalizePermissions({ spend_money: 'false' }), /must be true or false/);
+  assert.throws(() => permissions.applyPermissionPatch({ spend_money: 'false' }, base), /must be true or false/);
   for (const bad of ['true', '0', '', ' ', 0, -1, 1.5, null, [], [false], {}, { a: 1 }]) {
     assert.throws(
-      () => permissions.normalizePermissions({ edit_files: bad }),
+      () => permissions.applyPermissionPatch({ edit_files: bad }, base),
       /must be true or false/,
       `${JSON.stringify(bad)} was accepted as a permission value`
     );
   }
 });
 
-check('normalizePermissions rejects a non-object permissions payload', () => {
-  assert.throws(() => permissions.normalizePermissions('everything'), /must be an object/);
+check('applyPermissionPatch rejects a non-object payload, and null specifically', () => {
+  const base = permissions.defaultPermissionsFor();
+  assert.throws(() => permissions.applyPermissionPatch('everything', base), /must be an object/);
   // An array is an object; without an explicit check its indices become keys
   // and the caller is told "unknown permission capability: 0".
-  assert.throws(() => permissions.normalizePermissions(['edit_files']), /must be an object/);
+  assert.throws(() => permissions.applyPermissionPatch(['edit_files'], base), /must be an object/);
+  // null used to mean "reset every capability to its default", which silently
+  // granted the five that default to on.
+  assert.throws(() => permissions.applyPermissionPatch(null, base), /must not be null/);
 });
 
-// This case used to assert enforcement === 'enforced' for spend_money,
-// paid_model_calls and use_custom_provider, and it passed — which is how a
-// misleading claim survives review: it had a green test defending it. The
-// three do have an always-on system control, but nothing reads their stored
-// per-agent value, so "enforced" invited the operator to believe the toggle
-// did something. The classification now separates those two facts.
+// PATCH semantics: omission changes nothing. Under the previous
+// full-replacement rule an omitted key was refilled from the default, so a
+// caller naming one capability silently reinstated revoked ones and dropped
+// granted ones.
+check('applyPermissionPatch preserves every capability the caller did not name', () => {
+  const current = {
+    ...permissions.defaultPermissionsFor(),
+    read_workspace_data: false,   // a default-ON capability deliberately revoked
+    edit_files: true,             // a default-OFF capability deliberately granted
+  };
+  const patched = permissions.applyPermissionPatch({ spend_money: true }, current);
+  assert.strictEqual(patched.spend_money, true, 'the named capability did not change');
+  assert.strictEqual(patched.read_workspace_data, false, 'an omitted revocation was undone');
+  assert.strictEqual(patched.edit_files, true, 'an omitted grant was lost');
+
+  // An empty patch is an explicit no-op, not a reset.
+  const empty = permissions.applyPermissionPatch({}, current);
+  assert.deepStrictEqual(empty, current, 'an empty patch changed the effective authority');
+});
+
+// The canonical resolver. Read and write must agree about what a persisted row
+// means under the CURRENT vocabulary.
+check('resolveEffectivePermissions fills defaults, ignores unknown keys, and distrusts non-booleans', () => {
+  const defaults = permissions.defaultPermissionsFor();
+
+  // No row at all -> the least-authority default.
+  assert.deepStrictEqual(permissions.resolveEffectivePermissions(null), defaults);
+  assert.deepStrictEqual(permissions.resolveEffectivePermissions(undefined), defaults);
+
+  // A row from an older vocabulary: missing keys resolve to the current
+  // default rather than being absent, so GET and the write path agree.
+  const old = permissions.resolveEffectivePermissions({ edit_files: true });
+  assert.strictEqual(old.edit_files, true, 'a persisted value was dropped');
+  assert.strictEqual(old.read_workspace_data, true, 'a key absent from an old row must resolve to its default');
+  assert.strictEqual(Object.keys(old).length, permissions.CAPABILITY_KEYS.length, 'the resolved map must cover the current vocabulary exactly');
+
+  // A key the vocabulary no longer defines must not become ghost authority.
+  const ghost = permissions.resolveEffectivePermissions({ edit_files: true, retired_capability: true });
+  assert.ok(!('retired_capability' in ghost), 'a retired capability leaked into effective authority');
+
+  // Only a tampered store can hold a non-boolean; fall back to the default
+  // rather than coercing it into a grant.
+  const tampered = permissions.resolveEffectivePermissions({ spend_money: 'true', edit_files: [] });
+  assert.strictEqual(tampered.spend_money, false, 'a tampered non-boolean was coerced into a grant');
+  assert.strictEqual(tampered.edit_files, false, 'a tampered non-boolean was coerced into a grant');
+});
+
 check('the three capabilities with a system control name it; the other ten claim nothing', () => {
   const byKey = Object.fromEntries(permissions.CAPABILITIES.map((c) => [c.key, c]));
   for (const key of ['spend_money', 'paid_model_calls', 'use_custom_provider']) {

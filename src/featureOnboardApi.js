@@ -21,7 +21,7 @@ const yc = require('./ycStore');
 const agentSettings = require('./workspaceAgentSettingsStore');
 const { STAGES } = require('./businessStages');
 const { CATALOG, STAGE_RECOMMENDATIONS, recommendationsForStage } = require('./agentCatalog');
-const { CAPABILITIES, RUNTIME_ENFORCEMENT_SUMMARY, defaultPermissionsFor } = require('./permissions');
+const { CAPABILITIES, RUNTIME_ENFORCEMENT_SUMMARY, resolveEffectivePermissions } = require('./permissions');
 const { workspaceProgress } = require('./progress');
 const { AppError, Codes } = require('./errors');
 
@@ -226,14 +226,19 @@ function registerFeatureOnboardRoutes(app, { eventLog, actorFromRequest, sendErr
       //
       // `settings` stays null for an agent that has never been configured —
       // that distinction is real and worth keeping. `effectivePermissions` is
-      // what would apply right now, resolved HERE from the same
-      // defaultPermissionsFor() the store uses. The permission UI must render
-      // resolved values, not re-derive defaults client-side: a second copy of
-      // the default rule would show one thing while the store held another.
+      // what would apply right now, resolved through the same
+      // resolveEffectivePermissions() the store writes against. The permission
+      // UI must render resolved values, not re-derive defaults client-side: a
+      // second copy of the rule would show one thing while the store held
+      // another.
       const agents = CATALOG.map((a) => ({
         ...a,
         settings: byId[a.id] || null,
-        effectivePermissions: byId[a.id] ? byId[a.id].permissions : defaultPermissionsFor(),
+        // The SAME resolver the write path uses. Returning the raw stored map
+        // here is what made a newly-added capability render unchecked and then
+        // appear granted after an unrelated write: read and write disagreed
+        // about what an old row meant under the current vocabulary.
+        effectivePermissions: resolveEffectivePermissions(byId[a.id] ? byId[a.id].permissions : null),
         // A-002: the revision a permission write must declare. 0 means "no row
         // stored yet", which is the correct expectation for a first write.
         permissionRevision: byId[a.id] ? (byId[a.id].revision || 0) : 0,
