@@ -104,22 +104,68 @@ function defaultPermissionsFor() {
   return perms;
 }
 
-// Validate and normalize an operator-supplied permission map: unknown keys are
-// rejected (so a typo can't silently create a permission that looks granted),
-// missing keys fall back to the conservative default, and values are coerced
-// to strict booleans.
+// Render an offending value briefly enough for an error message, and without
+// letting a huge or exotic payload dominate the response.
+function describeValue(value) {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  const t = typeof value;
+  if (t === 'object') return 'an object';
+  if (t === 'string') {
+    const shown = value.length > 20 ? `${value.slice(0, 20)}…` : value;
+    return `the string "${shown}"`;
+  }
+  if (t === 'number' || t === 'bigint' || t === 'boolean') return `the ${t} ${String(value)}`;
+  return `a ${t}`;
+}
+
+// Validate and normalize an operator-supplied permission map.
+//
+// VALUES MUST BE LITERAL BOOLEANS. This used to be `Boolean(value)`, and a
+// permission boundary is the wrong place for JavaScript truthiness. Measured
+// through the HTTP API before this was changed, every one of these was stored
+// as a GRANT of a consequential capability that defaults to false:
+//
+//   "false" -> true      "0" -> true       [] -> true        {} -> true
+//   [false] -> true      " " -> true       -1 -> true        1.5 -> true
+//
+// The direction of failure is what makes it unacceptable: a caller trying to
+// REVOKE by sending the string "false" GRANTED instead. Coercion cannot
+// distinguish "the client serialised a boolean as a string" from "the client
+// sent garbage", and guessing in the permissive direction on an authority
+// boundary is the wrong default. Malformed values now fail closed.
+//
+// No stored permission is consulted by the runtime today (see the note at the
+// top of this file), so this was not a live authorization bypass — it was a
+// boundary that would have become one the moment these values started
+// governing execution.
+//
+// Unknown keys are still rejected, so a typo cannot silently create something
+// that looks granted, and missing keys still fall back to the conservative
+// default — see the FULL-REPLACEMENT note in workspaceAgentSettingsStore.
 function normalizePermissions(input) {
   const { AppError, Codes } = require('./errors');
   const out = defaultPermissionsFor();
   if (input === undefined || input === null) return out;
-  if (typeof input !== 'object') {
+  // Arrays are objects; without this an array's indices become "keys" and the
+  // caller is told `unknown permission capability: 0`, which describes the
+  // symptom rather than the mistake.
+  if (typeof input !== 'object' || Array.isArray(input)) {
     throw new AppError(Codes.VALIDATION_ERROR, 'permissions must be an object of capability -> boolean');
   }
   for (const [key, value] of Object.entries(input)) {
     if (!isValidCapability(key)) {
       throw new AppError(Codes.VALIDATION_ERROR, `unknown permission capability: ${key}`);
     }
-    out[key] = Boolean(value);
+    if (value !== true && value !== false) {
+      throw new AppError(
+        Codes.VALIDATION_ERROR,
+        `permission "${key}" must be true or false, not ${describeValue(value)}. ` +
+        'Permission values are not coerced: "false", "0", [] and {} are all truthy in JavaScript, ' +
+        'so accepting them would silently grant authority a caller may have meant to withhold.'
+      );
+    }
+    out[key] = value;
   }
   return out;
 }

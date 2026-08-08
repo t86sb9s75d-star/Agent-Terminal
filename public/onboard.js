@@ -651,9 +651,14 @@
           // and PUT it, so two toggles derived from the same (not-yet-
           // refreshed) snapshot silently erased one another.
           //
-          // The map is still sent whole — the store fills a partial map from
-          // the least-authority default, so posting one key alone would reset
-          // the others — but it now carries the revision it was derived from.
+          // The map is still sent whole, and that is load-bearing: a permission
+          // write is FULL REPLACEMENT, and the store fills any key the caller
+          // omits from defaultPermissionsFor(). That is not "resets the others
+          // to off" — five capabilities default to ON, so a partial write would
+          // silently REINSTATE a capability the operator had revoked as well as
+          // dropping ones they had granted. Sending the whole map is what keeps
+          // this path correct; it now also carries the revision it was derived
+          // from.
           // A superseded revision is refused with 409 instead of overwriting,
           // and the operator is told to retry rather than being shown a
           // success that quietly discarded someone's change.

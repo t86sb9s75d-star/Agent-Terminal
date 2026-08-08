@@ -130,10 +130,36 @@ check('normalizePermissions rejects unknown capabilities', () => {
   assert.throws(() => permissions.normalizePermissions({ made_up_power: true }), /unknown permission/);
 });
 
-check('normalizePermissions coerces to booleans and fills defaults', () => {
-  const norm = permissions.normalizePermissions({ spend_money: 1 });
-  assert.strictEqual(norm.spend_money, true);   // coerced
+// This case used to read `normalizePermissions coerces to booleans and fills
+// defaults` and asserted `{ spend_money: 1 }` becomes true. It passed, which is
+// how an unsafe contract survives review: it had a green test defending it.
+// Coercion on an authority boundary fails in the widening direction — measured
+// through the HTTP API, "false", "0", [] and {} all stored a GRANT of a
+// capability that defaults to false. The fill-from-default half was always
+// correct and is kept.
+check('normalizePermissions requires literal booleans and fills defaults', () => {
+  const norm = permissions.normalizePermissions({ spend_money: true });
+  assert.strictEqual(norm.spend_money, true);
   assert.strictEqual(norm.contact_people, false); // filled from conservative default
+
+  // The specific value this test used to bless.
+  assert.throws(() => permissions.normalizePermissions({ spend_money: 1 }), /must be true or false/);
+  // The one that makes coercion indefensible: a caller trying to REVOKE grants.
+  assert.throws(() => permissions.normalizePermissions({ spend_money: 'false' }), /must be true or false/);
+  for (const bad of ['true', '0', '', ' ', 0, -1, 1.5, null, [], [false], {}, { a: 1 }]) {
+    assert.throws(
+      () => permissions.normalizePermissions({ edit_files: bad }),
+      /must be true or false/,
+      `${JSON.stringify(bad)} was accepted as a permission value`
+    );
+  }
+});
+
+check('normalizePermissions rejects a non-object permissions payload', () => {
+  assert.throws(() => permissions.normalizePermissions('everything'), /must be an object/);
+  // An array is an object; without an explicit check its indices become keys
+  // and the caller is told "unknown permission capability: 0".
+  assert.throws(() => permissions.normalizePermissions(['edit_files']), /must be an object/);
 });
 
 // This case used to assert enforcement === 'enforced' for spend_money,

@@ -99,6 +99,9 @@ const AGENT = 'interview_agent';
 const CAP_A = 'edit_files';          // starts false (consequential -> least authority)
 const CAP_B = 'run_commands';        // starts false
 const CAP_C = 'read_workspace_data'; // starts true
+const CAP_C_FALSE = 'spend_money';   // starts false — the value-type cases need a
+                                     // capability whose DEFAULT is "not granted",
+                                     // so a coerced value shows up as a widening.
 
 // A fresh workspace per case, so no case can inherit another's state.
 async function freshWorkspace(label) {
@@ -491,6 +494,109 @@ function assertUnchanged(before, after, label, expectations = {}) {
     assert.match(String(legacy.body.error), /expectedRevision/, 'the refusal must name the missing field');
 
     assertUnchanged(before, await readRow(ws), 'undeclared-revision write', { [CAP_A]: true, [CAP_B]: false });
+  });
+
+  // ================================================================
+  // VALUE TYPES — the authority boundary does not guess
+  // ================================================================
+  await check('TYPES: literal booleans are accepted, both directions', async () => {
+    const ws = await freshWorkspace('types-ok');
+    const s0 = await readRow(ws);
+    assertAccepted(await putFrom(ws, s0, { [CAP_A]: true }), 'literal true');
+    const granted = await readRow(ws);
+    assert.strictEqual(granted.perms[CAP_A], true, 'literal true did not grant');
+
+    assertAccepted(await putFrom(ws, granted, { [CAP_A]: false }), 'literal false');
+    const revoked = await readRow(ws);
+    assert.strictEqual(revoked.perms[CAP_A], false, 'literal false did not revoke');
+  });
+
+  await check('TYPES: no non-boolean value can become a grant through coercion', async () => {
+    // Measured before the fix, through this same HTTP path, every one of these
+    // stored a GRANT of a capability that defaults to false. "false" and "0"
+    // are the ones that make coercion indefensible: a caller trying to REVOKE
+    // would have GRANTED.
+    const HOSTILE = [
+      ['1', 1], ['0', 0], ['-1', -1], ['1.5', 1.5],
+      ['"true"', 'true'], ['"false"', 'false'], ['"1"', '1'], ['"0"', '0'],
+      ['"" (empty string)', ''], ['" " (space)', ' '], ['"no"', 'no'],
+      ['null', null], ['[]', []], ['[false]', [false]], ['{}', {}],
+      ['{a:1}', { a: 1 }], ['[[]]', [[]]], ['[{x:[1]}]', [{ x: [1] }]],
+    ];
+    for (const [label, value] of HOSTILE) {
+      const ws = await freshWorkspace('types-bad');
+      const s0 = await readRow(ws);
+      // A witness capability the operator really did grant, so a partial
+      // application of the refused write would be visible.
+      assertAccepted(await putFrom(ws, s0, { [CAP_A]: true }), `witness grant for ${label}`);
+      const before = await readRow(ws);
+
+      const r = await putFrom(ws, before, { [CAP_C_FALSE]: value });
+      assert.strictEqual(
+        r.status, 400,
+        `permission value ${label} returned ${r.status} ${JSON.stringify(r.body)} — a non-boolean must be ` +
+        'refused, not coerced. JavaScript truthiness on an authority boundary turns "false", "0", [] and {} ' +
+        'into grants.'
+      );
+      assert.strictEqual(r.body && r.body.code, 'VALIDATION_ERROR', `${label}: refused, but not as a validation error`);
+      assert.match(String(r.body.error), /must be true or false/, `${label}: the refusal must name the type contract`);
+
+      const after = await readRow(ws);
+      assert.strictEqual(
+        after.perms[CAP_C_FALSE], false,
+        `permission value ${label} was stored as ${after.perms[CAP_C_FALSE]} despite the request being refused`
+      );
+      assert.strictEqual(after.perms[CAP_A], true, `${label}: the refused write disturbed an unrelated capability`);
+      assert.strictEqual(after.rev, before.rev, `${label}: a refused write advanced the revision ${before.rev} -> ${after.rev}`);
+    }
+  });
+
+  await check('TYPES: a malformed value is reported as malformed even when the revision is ALSO stale', async () => {
+    // Ordering, and it is not cosmetic: re-reading cannot fix a value that is
+    // the wrong type, so answering "revision N is current" would send the
+    // caller into a retry loop that can never succeed.
+    const ws = await freshWorkspace('types-order');
+    const s0 = await readRow(ws);
+    assertAccepted(await putFrom(ws, s0, { [CAP_A]: true }), 'setup');   // s0 is now stale
+    const before = await readRow(ws);
+
+    const r = await putFrom(ws, s0, { [CAP_C_FALSE]: 'false' });         // malformed AND stale
+    assert.strictEqual(r.status, 400, `expected the malformed value to win, got ${r.status} ${JSON.stringify(r.body)}`);
+    assert.match(String(r.body && r.body.error), /must be true or false/, 'the caller was told about the revision instead of the bad value');
+    assertUnchanged(before, await readRow(ws), 'malformed + stale', { [CAP_A]: true, [CAP_C_FALSE]: false });
+  });
+
+  await check('TYPES: an unknown capability outranks a malformed value on that same key', async () => {
+    const ws = await freshWorkspace('types-unknown');
+    const s0 = await readRow(ws);
+    const before = await readRow(ws);
+    const r = await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, {
+      permissions: { ...s0.perms, made_up_capability: 'yes' },
+      expectedRevision: s0.rev,
+    });
+    assert.strictEqual(r.status, 400, `expected 400, got ${r.status}`);
+    assert.match(
+      String(r.body && r.body.error), /unknown permission capability/,
+      'a capability that does not exist should be named as such — its value cannot matter'
+    );
+    assertUnchanged(before, await readRow(ws), 'unknown capability with a malformed value');
+  });
+
+  await check('TYPES: a non-object permissions payload is refused as such', async () => {
+    const ws = await freshWorkspace('types-shape');
+    const before = await readRow(ws);
+    for (const [label, payload] of [['a string', 'everything'], ['an array', ['edit_files']], ['a number', 7]]) {
+      const r = await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, {
+        permissions: payload, expectedRevision: before.rev,
+      });
+      assert.strictEqual(r.status, 400, `${label}: expected 400, got ${r.status}`);
+      assert.match(
+        String(r.body && r.body.error), /must be an object/,
+        `${label}: an array's indices become "keys", so without an explicit check the caller is told ` +
+        '"unknown permission capability: 0", which describes the symptom rather than the mistake'
+      );
+    }
+    assertUnchanged(before, await readRow(ws), 'non-object payloads');
   });
 
   await check('DIAGNOSIS: a misspelled capability is reported as such, not as a conflict', async () => {
