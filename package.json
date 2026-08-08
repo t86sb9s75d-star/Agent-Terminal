@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node src/server.js",
     "test:unit": "node test/runsStore.pricing.test.js && node test/runsStore.executionSuccess.test.js && node test/workstreamsStore.test.js && node test/effectiveModel.test.js && node test/progress.test.js && node test/domainModel.test.js && node test/workspaceStores.test.js && node test/routeCoverage.test.js",
-    "test:integration": "node test/integration.test.js",
+    "test:integration": "node test/integration.test.js && node test/permissionConcurrency.test.js && node test/permissionVocabulary.test.js",
     "test": "npm run test:unit && npm run test:integration",
     "test:frontend": "node test/frontend/featureOnboard.test.js",
     "test:all": "npm run test:unit && npm run test:integration && npm run test:frontend"
