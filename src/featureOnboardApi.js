@@ -21,7 +21,7 @@ const yc = require('./ycStore');
 const agentSettings = require('./workspaceAgentSettingsStore');
 const { STAGES } = require('./businessStages');
 const { CATALOG, STAGE_RECOMMENDATIONS, recommendationsForStage } = require('./agentCatalog');
-const { CAPABILITIES, RUNTIME_ENFORCEMENT_SUMMARY, resolveEffectivePermissions } = require('./permissions');
+const { CAPABILITIES, RUNTIME_ENFORCEMENT_SUMMARY, resolveEffectivePermissions, diffPermissions } = require('./permissions');
 const { workspaceProgress } = require('./progress');
 const { AppError, Codes } = require('./errors');
 
@@ -247,11 +247,58 @@ function registerFeatureOnboardRoutes(app, { eventLog, actorFromRequest, sendErr
     } catch (err) { sendError(res, err, req); }
   });
 
+  // AUDIT INTEGRITY. The evidence for a permission change must describe the
+  // transition that actually happened, and an event must not exist for a
+  // transition that did not.
+  //
+  // Measured on the previous implementation: granting edit_files recorded
+  // `details: {"enabled":false}` — naming neither the capability nor the
+  // direction, so the authority transition could not be reconstructed from the
+  // trail. Worse, a write whose requested state already equalled the stored
+  // state still emitted `workspace_agent.updated`, so the trail asserted an
+  // update that provably never occurred. Rejected writes (409 stale, 400
+  // malformed, 400 unknown capability) already emitted nothing, and still do.
+  //
+  // The BEFORE snapshot is read here rather than inside the store because the
+  // delta must be derived from the accepted transition — the persisted state on
+  // each side — not from the submitted request, which may name capabilities
+  // whose values did not change. Both the read and the write happen in this one
+  // synchronous block with no await between them, so nothing can interleave;
+  // that is the same single-threaded argument the store's own read-check-write
+  // already depends on.
   app.put('/api/workspaces/:workspaceId/agents/:agentId', (req, res) => {
     try {
       const wsId = requireWorkspace(req);
-      const row = agentSettings.upsert(wsId, req.params.agentId, req.body || {});
-      audit(req, { action: 'workspace_agent.updated', entityType: 'workspace_agent', entityId: `${wsId}:${req.params.agentId}`, details: { enabled: row.enabled } });
+      const agentId = req.params.agentId;
+      const before = agentSettings.getForWorkspace(wsId, agentId);
+      const row = agentSettings.upsert(wsId, agentId, req.body || {});
+
+      const delta = diffPermissions(before ? before.permissions : null, row.permissions);
+      const beforeRevision = before ? (before.revision || 0) : 0;
+      const enabledChanged = !before || before.enabled !== row.enabled;
+      const configChanged = JSON.stringify(before ? before.config : {}) !== JSON.stringify(row.config);
+
+      // Emit iff something actually changed. An event in this trail means an
+      // accepted change occurred; a request that changed nothing is not one.
+      if (delta.changed || enabledChanged || configChanged) {
+        audit(req, {
+          action: 'workspace_agent.updated',
+          entityType: 'workspace_agent',
+          entityId: `${wsId}:${agentId}`,
+          details: {
+            enabled: row.enabled,
+            // Direction is explicit: granted is false -> true, revoked is
+            // true -> false. Sorted, so one transition always serialises the
+            // same way and consumers diff semantics rather than key order.
+            permissionsGranted: delta.granted,
+            permissionsRevoked: delta.revoked,
+            // The revision transition the delta belongs to, so a reader can
+            // place this record in the row's history without guessing.
+            permissionRevisionFrom: beforeRevision,
+            permissionRevisionTo: row.revision,
+          },
+        });
+      }
       res.json(row);
     } catch (err) { sendError(res, err, req); }
   });

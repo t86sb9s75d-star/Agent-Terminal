@@ -229,6 +229,40 @@ function isConsequential(key) {
   return CONSEQUENTIAL_KEYS.includes(key);
 }
 
+// The authority delta between two EFFECTIVE permission maps.
+//
+// This exists so an audit record can say what actually changed. Before it, a
+// permission write recorded only `{ enabled }` — measured on a real transition
+// that granted edit_files, the audit evidence was `{"enabled":false}`, which
+// names neither the capability nor its direction. An independent reviewer could
+// not reconstruct the authority transition from the trail at all.
+//
+// GRANTED means false -> true and REVOKED means true -> false, so the direction
+// is explicit rather than implied by a value the reader has to interpret.
+// Together with the revision transition recorded alongside it, that is enough to
+// replay the change without also duplicating the unchanged capabilities.
+//
+// Both sides are compared over the CURRENT vocabulary via
+// resolveEffectivePermissions, so a key the vocabulary no longer defines cannot
+// appear as a spurious revocation, and a newly added capability cannot appear as
+// a spurious grant merely because an old row predates it.
+//
+// Order is sorted, so the same transition always serialises identically — a
+// consumer diffing two records is comparing semantics, not key insertion order.
+function diffPermissions(before, after) {
+  const b = resolveEffectivePermissions(before);
+  const a = resolveEffectivePermissions(after);
+  const granted = [];
+  const revoked = [];
+  for (const cap of CAPABILITIES) {
+    if (b[cap.key] === false && a[cap.key] === true) granted.push(cap.key);
+    else if (b[cap.key] === true && a[cap.key] === false) revoked.push(cap.key);
+  }
+  granted.sort();
+  revoked.sort();
+  return { granted, revoked, changed: granted.length > 0 || revoked.length > 0 };
+}
+
 module.exports = {
   CAPABILITIES,
   CAPABILITY_KEYS,
@@ -238,5 +272,6 @@ module.exports = {
   defaultPermissionsFor,
   resolveEffectivePermissions,
   applyPermissionPatch,
+  diffPermissions,
   isConsequential,
 };
