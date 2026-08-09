@@ -464,7 +464,7 @@
                 <button class="fo-perm-toggle" data-fo-perms="${attr(a.id)}" aria-expanded="${open}" aria-controls="fo-perms-${attr(a.id)}">
                   ${open ? 'Hide' : 'Review'} permissions (${(state.catalog.capabilities || []).length})
                 </button>
-                <div id="fo-perms-${attr(a.id)}" ${open ? '' : 'hidden'}>
+                <div id="fo-perms-${attr(a.id)}" data-fo-perm-revision="${attr(String(a.permissionRevision || 0))}" ${open ? '' : 'hidden'}>
                   ${open ? permissionRows(a.id, a.effectivePermissions) : ''}
                 </div>
               </div>`;
@@ -647,14 +647,42 @@
           await api(`/api/workspaces/${state.activeWorkspaceId}/agents/${el.dataset.foAgent}`, { method: 'PUT', body: JSON.stringify({ enabled: el.checked }) });
           await loadActiveWorkspaceDetail();
         } else if (el.dataset.foPerm) {
-          // Send the WHOLE resolved map, not just the changed key. The store
-          // normalizes a partial map by filling missing keys from the
-          // least-authority default, so posting one key would silently reset
-          // every other capability on that agent.
+          // A-002. This used to spread the client's snapshot into a whole map
+          // and PUT it, so two toggles derived from the same (not-yet-
+          // refreshed) snapshot silently erased one another.
+          //
+          // The write carries the revision it was derived from. A superseded
+          // revision is refused with 409 instead of overwriting, and the
+          // operator is told to retry rather than being shown a success that
+          // quietly discarded someone's change.
+          //
+          // A permission write is a PATCH: the server keeps the current
+          // effective value of every capability the request does not name, {}
+          // is an explicit no-op, and a null map is refused. So sending the
+          // whole map is legal — a full map is simply a patch naming every
+          // capability — but it is no longer what keeps this path correct.
+          // Omitting a key is safe by construction now, which was not true
+          // before: omitted keys used to be refilled from
+          // defaultPermissionsFor(), and five capabilities default to ON, so a
+          // partial write REINSTATED capabilities the operator had revoked as
+          // well as dropping ones they had granted. Spreading the snapshot is
+          // kept because it is the natural shape for a checkbox grid, not
+          // because correctness depends on it.
           const agentId = el.dataset.agent;
           const agent = (state.agents.agents || []).find((a) => a.id === agentId);
           const next = { ...(agent ? agent.effectivePermissions : {}), [el.dataset.foPerm]: el.checked };
-          await api(`/api/workspaces/${state.activeWorkspaceId}/agents/${agentId}`, { method: 'PUT', body: JSON.stringify({ permissions: next }) });
+          try {
+            await api(`/api/workspaces/${state.activeWorkspaceId}/agents/${agentId}`, {
+              method: 'PUT',
+              body: JSON.stringify({ permissions: next, expectedRevision: agent ? agent.permissionRevision : 0 }),
+            });
+          } catch (err) {
+            // Re-read so the checkbox reflects what is actually stored, rather
+            // than leaving the UI asserting a change the server refused.
+            await loadActiveWorkspaceDetail();
+            renderBusiness();
+            throw err;
+          }
           await loadActiveWorkspaceDetail();
           renderBusiness();
         } else if (el.dataset.foStatus) {
