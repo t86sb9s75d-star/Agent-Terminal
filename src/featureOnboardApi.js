@@ -25,6 +25,7 @@ const { CAPABILITIES, RUNTIME_ENFORCEMENT_SUMMARY, resolveEffectivePermissions, 
 const { workspaceProgress } = require('./progress');
 const { AppError, Codes } = require('./errors');
 const { isDeepStrictEqual } = require('node:util');
+const { sha256 } = require('./persistence/integrityChain');
 
 // Aggregate every milestone across every goal in a workspace into one
 // deterministic progress number (see progress.workspaceProgress). Null when
@@ -248,6 +249,64 @@ function registerFeatureOnboardRoutes(app, { eventLog, actorFromRequest, sendErr
     } catch (err) { sendError(res, err, req); }
   });
 
+  // WHAT THE AUDIT RECORD MAY SAY ABOUT `config`, and why it stops there.
+  //
+  // Every other dimension of this row records its transition in full: the
+  // permission delta names each capability and direction, recommendedStage and
+  // enabled name both sides. config deliberately does NOT record values.
+  //
+  // The reason is not squeamishness, it is that the project's own convention
+  // for configuration history cannot be applied here. configHistoryStore.js
+  // does record before/after values — but only over a fixed TRACKED_FIELDS
+  // list, with a curated REDACTED_FIELDS allowlist, under the rule stated in
+  // its module comment: a field that can hold a secret MUST be registered
+  // there before it ships, because that history is retained indefinitely and
+  // is not access-controlled. That discipline depends on a KNOWN SCHEMA. This
+  // config is a free-form bag whose keys the caller invents at write time, so
+  // there is no field list to curate and no moment at which a secret-bearing
+  // key could have been registered in advance. events.jsonl is append-only and
+  // hash-chained, so a value written into it can never be redacted without
+  // breaking the chain — the mistake would be permanent.
+  //
+  // So the record identifies WHICH top-level keys moved, by name only, and
+  // pins each side with a canonical fingerprint. An auditor holding a candidate
+  // config can then prove or disprove that it was the state at that moment,
+  // which is the verification property that matters, without the log itself
+  // ever holding the data. Key NAMES are disclosed; that is a deliberate and
+  // much weaker exposure than values, and it is what makes the record able to
+  // answer "what changed" at all.
+  //
+  // The fingerprint is computed over a canonical, recursively key-sorted
+  // serialisation. That is required for coherence, not neatness: object key
+  // order is not state here (see configChanged below), so a fingerprint that
+  // was sensitive to it would report two different values for a transition the
+  // same route just decided was not a change.
+  function canonicalJson(value) {
+    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+    if (value && typeof value === 'object') {
+      return `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`).join(',')}}`;
+    }
+    return JSON.stringify(value === undefined ? null : value);
+  }
+  const configFingerprint = (cfg) => sha256(canonicalJson(cfg || {}));
+
+  // Top-level key granularity. A change nested inside a key is reported as that
+  // key having changed, which is truthful and is as deep as this can go without
+  // disclosing structure that may itself be sensitive.
+  function diffConfigKeys(before, after) {
+    const b = before || {};
+    const a = after || {};
+    const added = []; const removed = []; const changed = [];
+    for (const k of new Set([...Object.keys(b), ...Object.keys(a)])) {
+      const inB = Object.prototype.hasOwnProperty.call(b, k);
+      const inA = Object.prototype.hasOwnProperty.call(a, k);
+      if (!inB && inA) added.push(k);
+      else if (inB && !inA) removed.push(k);
+      else if (!isDeepStrictEqual(b[k], a[k])) changed.push(k);
+    }
+    return { added: added.sort(), removed: removed.sort(), changed: changed.sort() };
+  }
+
   // AUDIT INTEGRITY. The evidence for a permission change must describe the
   // transition that actually happened, and an event must not exist for a
   // transition that did not.
@@ -336,6 +395,28 @@ function registerFeatureOnboardRoutes(app, { eventLog, actorFromRequest, sendErr
         if (stageChanged) {
           details.recommendedStageFrom = stageBefore;
           details.recommendedStageTo = row.recommendedStage;
+        }
+        // Same rule for config and enabled: present only when that dimension
+        // moved, so a reader can answer "did this change?" from the record
+        // rather than inferring it from the absence of everything else.
+        //
+        // `enabled` (the resulting value) stays as it was for compatibility,
+        // but it was never evidence of a transition — it appeared identically
+        // whether or not enabled had moved, which is exactly the gap this
+        // closes. enabledFrom is null when no settings row existed, because
+        // there is no previous boolean to name and claiming `false` would
+        // invent a transition that never had a false side.
+        if (enabledChanged) {
+          details.enabledFrom = before ? before.enabled : null;
+          details.enabledTo = row.enabled;
+        }
+        if (configChanged) {
+          const ck = diffConfigKeys(before ? before.config : {}, row.config);
+          details.configKeysAdded = ck.added;
+          details.configKeysRemoved = ck.removed;
+          details.configKeysChanged = ck.changed;
+          details.configFrom = configFingerprint(before ? before.config : {});
+          details.configTo = configFingerprint(row.config);
         }
         audit(req, {
           action: 'workspace_agent.updated',

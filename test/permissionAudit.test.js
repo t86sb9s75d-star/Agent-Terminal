@@ -514,6 +514,15 @@ function assertReconstructs(ev, before, after, label) {
     assert.strictEqual(d.recommendedStageTo, 'scale', 'record misstates the stage it moved TO');
     assertReconstructs(evs[evs.length - 1], before, after, 'multi-dimension');
     assert.deepStrictEqual(d.permissionsGranted, [A1], 'the permission delta must stay truthful alongside the rest');
+    // This case deliberately moves config too. Asserting only the other three
+    // dimensions would prove "a config change causes an event" while leaving
+    // "the record identifies the config transition" untested — which is exactly
+    // how the config evidence gap survived a green suite.
+    assert.strictEqual(d.enabledFrom, false, 'record misstates the enabled value it moved FROM');
+    assert.deepStrictEqual(d.configKeysChanged, ['a'], 'the config transition must be named alongside the others');
+    assert.deepStrictEqual(d.configKeysAdded, [], 'nothing was added to config');
+    assert.deepStrictEqual(d.configKeysRemoved, [], 'nothing was removed from config');
+    assert.notStrictEqual(d.configFrom, d.configTo, 'a real config transition must not have equal fingerprints');
   });
 
   await check('a rejected write moves no dimension and emits nothing, even when it names them all', async () => {
@@ -537,6 +546,227 @@ function assertReconstructs(ev, before, after, label) {
       'a refused write changed persisted state — the refusal was not atomic'
     );
     assert.strictEqual(permissionEvents(ws).length - n, 0, 'a refused write must emit nothing');
+  });
+
+  // ---------------------------------------------------------------------
+  // EVIDENCE, NOT JUST EMISSION.
+  //
+  // Detecting a change and describing it are different guarantees. Measured on
+  // the previous head, a config-only transition {mode:"A"} -> {mode:"B"} emitted
+  // exactly this record:
+  //
+  //   {"enabled":true,"permissionsGranted":[],"permissionsRevoked":[],
+  //    "permissionRevisionFrom":0,"permissionRevisionTo":0}
+  //
+  // No field in it refers to config at all, so a reader could not tell that
+  // config was the thing that moved — the same failure that was fixed for
+  // recommendedStage, left in place for config.
+  //
+  // THE CONTRACT FOR CONFIG IS DELIBERATELY NOT "RECONSTRUCT THE VALUES".
+  // config is a schemaless bag whose keys are chosen by the caller at write
+  // time. The project's existing convention for configuration history
+  // (configHistoryStore.js) does record before/after VALUES, but only over a
+  // fixed TRACKED_FIELDS list with a curated REDACTED_FIELDS allowlist, under a
+  // stated rule that a secret-bearing field must be registered there before it
+  // ships. That discipline cannot be applied to a map with no schema — you
+  // cannot pre-register the secret-bearing key names of a bag the caller
+  // invents. events.jsonl is append-only and hash-chained, so a value written
+  // here can never be redacted without breaking the chain.
+  //
+  // So the record identifies WHICH keys moved (names only, never values) and
+  // pins each side with a canonical fingerprint. That lets an auditor holding a
+  // candidate config prove or disprove it was the state at that moment, with no
+  // disclosure. These cases enforce both halves: the evidence is present, and
+  // the values are not.
+  // ---------------------------------------------------------------------
+
+  // Independent reimplementation of the canonical hash. Deliberately NOT
+  // imported from the route: importing the implementation under test would make
+  // a bug in it invisible to these assertions.
+  const crypto = require('crypto');
+  function canonical(v) {
+    if (Array.isArray(v)) return `[${v.map(canonical).join(',')}]`;
+    if (v && typeof v === 'object') {
+      return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(',')}}`;
+    }
+    return JSON.stringify(v === undefined ? null : v);
+  }
+  const fingerprint = (cfg) => crypto.createHash('sha256').update(canonical(cfg || {})).digest('hex');
+
+  await check('a config-only transition is IDENTIFIED in the record, not merely counted', async () => {
+    const ws = await freshWorkspace('cfgevid');
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: true, config: { mode: 'A' } });
+    const cfgBefore = persistedRow(ws).config;
+    const n = permissionEvents(ws).length;
+
+    const r = await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { config: { mode: 'B' } });
+    assert.ok(r.status >= 200 && r.status < 300, `refused: ${r.status}`);
+    const cfgAfter = persistedRow(ws).config;
+    assert.deepStrictEqual(cfgAfter, { mode: 'B' }, 'wrong premise: config not persisted');
+
+    const evs = permissionEvents(ws);
+    assert.strictEqual(evs.length - n, 1, 'a config change must be audited');
+    const d = evs[evs.length - 1].details;
+    assert.deepStrictEqual(d.configKeysChanged, ['mode'], 'the record must name the key that moved');
+    assert.deepStrictEqual(d.configKeysAdded, [], 'nothing was added');
+    assert.deepStrictEqual(d.configKeysRemoved, [], 'nothing was removed');
+    assert.strictEqual(d.configFrom, fingerprint(cfgBefore), 'configFrom does not pin the persisted BEFORE state');
+    assert.strictEqual(d.configTo, fingerprint(cfgAfter), 'configTo does not pin the persisted AFTER state');
+    assert.notStrictEqual(d.configFrom, d.configTo, 'a real transition must not have equal fingerprints');
+  });
+
+  await check('config VALUES never reach the append-only audit log', async () => {
+    // The privacy half of the contract. events.jsonl cannot be redacted later
+    // without breaking the hash chain, so a value written here is permanent.
+    const ws = await freshWorkspace('cfgsecret');
+    const CANARY = 'sk-canary-VALUE-must-never-be-logged-9f3a2b';
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: true, config: { token: 'old-value-also-secret' } });
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { config: { token: CANARY } });
+
+    const raw = fs.readFileSync(path.join(dataDir, 'events.jsonl'), 'utf8');
+    assert.ok(!raw.includes(CANARY), 'a config VALUE was copied into the append-only audit log');
+    assert.ok(!raw.includes('old-value-also-secret'), 'a previous config VALUE was copied into the audit log');
+    const d = permissionEvents(ws)[permissionEvents(ws).length - 1].details;
+    assert.deepStrictEqual(d.configKeysChanged, ['token'], 'the key NAME is the evidence, and it must be present');
+  });
+
+  await check('config evidence distinguishes added, removed and changed keys', async () => {
+    const ws = await freshWorkspace('cfgkeys');
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: true, config: { keep: 1, drop: 2, edit: 3 } });
+    const n = permissionEvents(ws).length;
+
+    const cfgBefore = persistedRow(ws).config;
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { config: { keep: 1, edit: 4, fresh: 5 } });
+    assert.strictEqual(permissionEvents(ws).length - n, 1, 'expected exactly one record');
+    const d = permissionEvents(ws)[permissionEvents(ws).length - 1].details;
+    assert.deepStrictEqual(d.configKeysAdded, ['fresh'], 'added key misreported');
+    assert.deepStrictEqual(d.configKeysRemoved, ['drop'], 'removed key misreported');
+    assert.deepStrictEqual(d.configKeysChanged, ['edit'], 'changed key misreported — `keep` did not move');
+
+    // Both sides here hold SEVERAL keys in non-alphabetical insertion order, so
+    // a fingerprint computed over raw JSON.stringify would differ from the
+    // canonical one. The single-key cases elsewhere cannot tell those apart —
+    // this is the case that pins canonicalisation.
+    assert.ok(Object.keys(cfgBefore).length > 1, 'wrong premise: need a multi-key config to detect key ordering');
+    assert.strictEqual(d.configFrom, fingerprint(cfgBefore), 'configFrom is not the CANONICAL fingerprint of the before state');
+    assert.strictEqual(d.configTo, fingerprint(persistedRow(ws).config), 'configTo is not the CANONICAL fingerprint of the after state');
+  });
+
+  await check('a config fingerprint is blind to key order but not to values', async () => {
+    // Direct statement of the equality semantics the fingerprint must have, and
+    // the tie back to the no-op rule: two configs the route considers equal must
+    // fingerprint equal, or the record would contradict the route's own
+    // decision that a reorder is not a change.
+    const ws = await freshWorkspace('cfgfp');
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: true, config: { x: 1, y: 2, z: 3 } });
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { config: { p: 0 } });          // real change
+    const viaOrderA = permissionEvents(ws)[permissionEvents(ws).length - 1].details.configFrom;
+
+    const ws2 = await freshWorkspace('cfgfp2');
+    await api('PUT', `/api/workspaces/${ws2}/agents/${AGENT}`, { enabled: true, config: { z: 3, x: 1, y: 2 } }); // same content, other order
+    await api('PUT', `/api/workspaces/${ws2}/agents/${AGENT}`, { config: { p: 0 } });
+    const viaOrderB = permissionEvents(ws2)[permissionEvents(ws2).length - 1].details.configFrom;
+
+    assert.strictEqual(viaOrderA, viaOrderB, 'the same configuration fingerprinted differently depending on key order');
+
+    const ws3 = await freshWorkspace('cfgfp3');
+    await api('PUT', `/api/workspaces/${ws3}/agents/${AGENT}`, { enabled: true, config: { x: 1, y: 2, z: 4 } }); // one VALUE differs
+    await api('PUT', `/api/workspaces/${ws3}/agents/${AGENT}`, { config: { p: 0 } });
+    const different = permissionEvents(ws3)[permissionEvents(ws3).length - 1].details.configFrom;
+    assert.notStrictEqual(different, viaOrderA, 'configs differing in a VALUE must not fingerprint identically');
+  });
+
+  await check('config evidence is absent when config did not move', async () => {
+    // The counterpart to the case above: a permission-only write must not
+    // decorate its record with a config transition that did not happen.
+    const ws = await freshWorkspace('cfgabsent');
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: true, config: { a: 1 } });
+    const s = await state(ws);
+    const n = permissionEvents(ws).length;
+
+    await write(ws, { [A1]: true }, s.rev);
+    assert.strictEqual(permissionEvents(ws).length - n, 1, 'expected exactly one record');
+    const d = permissionEvents(ws)[permissionEvents(ws).length - 1].details;
+    for (const k of ['configKeysAdded', 'configKeysRemoved', 'configKeysChanged', 'configFrom', 'configTo']) {
+      assert.ok(!(k in d), `record claims a config transition that did not happen: ${k} present`);
+    }
+  });
+
+  await check('a config key REORDER alongside a real change claims no config transition', async () => {
+    // The sharpest case for the fingerprint: an event IS emitted (enabled
+    // moved), so "no event" cannot hide a wrong answer here. The record must
+    // still not claim config changed, and this is what catches a fingerprint
+    // computed over non-canonical JSON.
+    const ws = await freshWorkspace('cfgreorder');
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: false, config: { a: 1, b: 2 } });
+    const n = permissionEvents(ws).length;
+
+    const r = await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: true, config: { b: 2, a: 1 } });
+    assert.ok(r.status >= 200 && r.status < 300, `refused: ${r.status}`);
+    assert.strictEqual(permissionEvents(ws).length - n, 1, 'the enabled change must still be audited');
+    const d = permissionEvents(ws)[permissionEvents(ws).length - 1].details;
+    assert.strictEqual(d.enabledTo, true, 'the enabled transition must be recorded');
+    assert.ok(
+      !('configKeysChanged' in d) && !('configFrom' in d),
+      `record claims a config transition for a key reorder: ${JSON.stringify(d)}`
+    );
+  });
+
+  await check('config and another dimension moving together are BOTH identified', async () => {
+    const ws = await freshWorkspace('cfgmixed');
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: false, config: { mode: 'A' } });
+    const cfgBefore = persistedRow(ws).config;
+    const n = permissionEvents(ws).length;
+
+    const r = await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: true, config: { mode: 'B' } });
+    assert.ok(r.status >= 200 && r.status < 300, `refused: ${r.status}`);
+    assert.strictEqual(permissionEvents(ws).length - n, 1, 'one accepted change is one record');
+    const d = permissionEvents(ws)[permissionEvents(ws).length - 1].details;
+    assert.strictEqual(d.enabledFrom, false, 'the enabled transition must name where it came from');
+    assert.strictEqual(d.enabledTo, true, 'the enabled transition must name where it went');
+    assert.deepStrictEqual(d.configKeysChanged, ['mode'], 'the config transition must not be masked by the enabled one');
+    assert.strictEqual(d.configFrom, fingerprint(cfgBefore), 'configFrom must pin the persisted before state');
+    assert.strictEqual(d.configTo, fingerprint(persistedRow(ws).config), 'configTo must pin the persisted after state');
+  });
+
+  await check('an enabled transition names both sides, and is absent when enabled did not move', async () => {
+    // Measured on the previous head: the record carried `enabled: <result>` on
+    // EVERY event, so a reader could not tell whether enabled had moved. That
+    // is the same gap that was closed for recommendedStage.
+    const ws = await freshWorkspace('enabledevid');
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: true });
+    const n = permissionEvents(ws).length;
+
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: false });
+    const d = permissionEvents(ws)[permissionEvents(ws).length - 1].details;
+    assert.strictEqual(permissionEvents(ws).length - n, 1, 'expected exactly one record');
+    assert.strictEqual(d.enabledFrom, true, 'record misstates the enabled value it moved FROM');
+    assert.strictEqual(d.enabledTo, false, 'record misstates the enabled value it moved TO');
+
+    // Now a permission-only change with enabled deliberately unchanged.
+    const s = await state(ws);
+    await write(ws, { [A1]: true }, s.rev);
+    const d2 = permissionEvents(ws)[permissionEvents(ws).length - 1].details;
+    assert.deepStrictEqual(d2.permissionsGranted, [A1], 'wrong premise: the permission change did not land');
+    assert.ok(
+      !('enabledFrom' in d2) && !('enabledTo' in d2),
+      `record claims an enabled transition that did not happen: ${JSON.stringify(d2)}`
+    );
+  });
+
+  await check('the first event for a newly materialized row reports no prior enabled state', async () => {
+    // There was no row before, so there is no previous boolean to name. null
+    // says that honestly rather than implying a false -> true transition that
+    // never had a `false` side.
+    const ws = await freshWorkspace('firstevent');
+    const n = permissionEvents(ws).length;
+
+    const r = await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: true });
+    assert.ok(r.status >= 200 && r.status < 300, `refused: ${r.status}`);
+    assert.strictEqual(permissionEvents(ws).length - n, 1, 'materializing a row with enabled:true is a real change');
+    const d = permissionEvents(ws)[permissionEvents(ws).length - 1].details;
+    assert.strictEqual(d.enabledFrom, null, 'no settings row existed, so enabledFrom must be null, not false');
+    assert.strictEqual(d.enabledTo, true, 'enabledTo must be the persisted value');
   });
 
   stopServer();
