@@ -92,6 +92,17 @@ function permissionEvents(ws) {
     .filter((e) => e && e.action === 'workspace_agent.updated' && String(e.entityId) === `${ws}:${AGENT}`);
 }
 
+// The PERSISTED settings row, read from the store file rather than from the
+// API — recommendedStage and config are not surfaced by GET .../agents as
+// top-level fields, and the question here is what was actually written.
+function persistedRow(ws) {
+  const f = path.join(dataDir, 'workspace_agent_settings.json');
+  if (!fs.existsSync(f)) return null;
+  const env = JSON.parse(fs.readFileSync(f, 'utf8'));
+  const recs = Array.isArray(env) ? env : (env.records || env.data || []);
+  return recs.find((r) => r.workspaceId === ws && r.agentId === AGENT) || null;
+}
+
 async function state(ws) {
   const r = await api('GET', `/api/workspaces/${ws}/agents`);
   assert.strictEqual(r.status, 200, `agents read failed: ${r.status}`);
@@ -334,6 +345,198 @@ function assertReconstructs(ev, before, after, label) {
       'replaying every audit delta from the default state does not reproduce the persisted permissions — ' +
       'the trail and the stored authority have diverged'
     );
+  });
+
+  // ---------------------------------------------------------------------
+  // EVERY INDEPENDENTLY MUTABLE DIMENSION OF THIS ROW.
+  //
+  // The emission condition is only correct if it covers the COMPLETE set of
+  // state this endpoint can move. Derived from upsert()'s parameter list, that
+  // set is: permissions, enabled, config, recommendedStage. The cases above
+  // cover permissions thoroughly and enabled partially. These cover the rest,
+  // and the failure they exist for is the one that was measured on the first
+  // version of this route: a recommendedStage-only write changed persisted
+  // state (null -> "growth", HTTP 200) and emitted nothing at all.
+  // ---------------------------------------------------------------------
+
+  await check('a recommendedStage-only change is audited and names both sides', async () => {
+    const ws = await freshWorkspace('stage');
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: true });   // row now exists
+    const rowBefore = persistedRow(ws);
+    const n = permissionEvents(ws).length;
+
+    const r = await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { recommendedStage: 'growth' });
+    assert.ok(r.status >= 200 && r.status < 300, `stage write was refused: ${r.status}`);
+
+    const rowAfter = persistedRow(ws);
+    assert.strictEqual(rowAfter.recommendedStage, 'growth', 'the store did not persist the stage — wrong premise');
+    assert.notStrictEqual(rowBefore.recommendedStage, rowAfter.recommendedStage, 'no transition to audit — wrong premise');
+
+    const evs = permissionEvents(ws);
+    assert.strictEqual(
+      evs.length - n, 1,
+      'a recommendedStage transition was persisted with no audit record — an accepted state change ' +
+      'is invisible to the trail'
+    );
+    const d = evs[evs.length - 1].details;
+    assert.strictEqual(d.recommendedStageFrom, rowBefore.recommendedStage, 'record misstates the stage it moved FROM');
+    assert.strictEqual(d.recommendedStageTo, rowAfter.recommendedStage, 'record misstates the stage it moved TO');
+    assert.deepStrictEqual(d.permissionsGranted, [], 'a stage change must not invent grants');
+    assert.deepStrictEqual(d.permissionsRevoked, [], 'a stage change must not invent revocations');
+    assert.strictEqual(
+      d.permissionRevisionFrom, d.permissionRevisionTo,
+      'a stage change must not move the permission revision'
+    );
+  });
+
+  await check('a recommendedStage NO-OP emits nothing', async () => {
+    const ws = await freshWorkspace('stagenoop');
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: true, recommendedStage: 'growth' });
+    const n = permissionEvents(ws).length;
+
+    const r = await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { recommendedStage: 'growth' });
+    assert.ok(r.status >= 200 && r.status < 300, `refused: ${r.status}`);
+    assert.strictEqual(persistedRow(ws).recommendedStage, 'growth', 'stage should be unmoved');
+    assert.strictEqual(
+      permissionEvents(ws).length - n, 0,
+      're-stating the stage already stored fabricated an update that did not happen'
+    );
+  });
+
+  await check('an enabled NO-OP emits nothing', async () => {
+    const ws = await freshWorkspace('enablednoop');
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: true });
+    const n = permissionEvents(ws).length;
+
+    const r = await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: true });
+    assert.ok(r.status >= 200 && r.status < 300, `refused: ${r.status}`);
+    assert.strictEqual(persistedRow(ws).enabled, true, 'enabled should be unmoved');
+    assert.strictEqual(
+      permissionEvents(ws).length - n, 0,
+      're-stating enabled:true fabricated an update that did not happen'
+    );
+  });
+
+  await check('a config change is audited', async () => {
+    const ws = await freshWorkspace('config');
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: true, config: { a: 1 } });
+    const n = permissionEvents(ws).length;
+
+    const r = await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { config: { a: 2 } });
+    assert.ok(r.status >= 200 && r.status < 300, `refused: ${r.status}`);
+    assert.deepStrictEqual(persistedRow(ws).config, { a: 2 }, 'the store did not persist the config — wrong premise');
+    assert.strictEqual(
+      permissionEvents(ws).length - n, 1,
+      'a real config change must stay audited'
+    );
+  });
+
+  await check('a config key-order-only change is a semantic NO-OP and emits nothing', async () => {
+    // A JSON object is an unordered collection, and this config bag has no
+    // consumer anywhere in src/ or public/ — nothing can observe key order, so
+    // reordering keys is not a state transition. Measured with the old
+    // JSON.stringify comparison this emitted an event: an assertion that a
+    // configuration changed when it had not.
+    const ws = await freshWorkspace('configorder');
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: true, config: { a: 1, b: 2 } });
+    const n = permissionEvents(ws).length;
+
+    const r = await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { config: { b: 2, a: 1 } });
+    assert.ok(r.status >= 200 && r.status < 300, `refused: ${r.status}`);
+    assert.strictEqual(
+      permissionEvents(ws).length - n, 0,
+      'reordering config keys emitted an update — the record asserts a configuration change that ' +
+      'did not semantically occur'
+    );
+
+    // Nested objects reorder too, and must be judged the same way.
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { config: { outer: { x: 1, y: 2 } } });
+    const n2 = permissionEvents(ws).length;
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { config: { outer: { y: 2, x: 1 } } });
+    assert.strictEqual(permissionEvents(ws).length - n2, 0, 'a nested key reorder is still a semantic no-op');
+  });
+
+  await check('config ARRAY order IS meaningful and still counts as a change', async () => {
+    // The counterpart to the case above, and the reason the comparison must be
+    // deep-structural rather than "sort everything": arrays are ordered, so
+    // [1,2] -> [2,1] is a real change and losing it would be a false negative.
+    const ws = await freshWorkspace('configarray');
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: true, config: { list: [1, 2] } });
+    const n = permissionEvents(ws).length;
+
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { config: { list: [2, 1] } });
+    assert.deepStrictEqual(persistedRow(ws).config, { list: [2, 1] }, 'wrong premise: array not persisted');
+    assert.strictEqual(
+      permissionEvents(ws).length - n, 1,
+      'reordering an array is a real change and must not be swallowed as a no-op'
+    );
+  });
+
+  await check('a permission-only change does not claim a stage transition', async () => {
+    // Guards the other direction: the stage fields must appear only when the
+    // stage actually moved, never as decoration on an unrelated record.
+    const ws = await freshWorkspace('nostage');
+    const s = await state(ws);
+    const n = permissionEvents(ws).length;
+    await write(ws, { [A1]: true }, s.rev);
+
+    const evs = permissionEvents(ws);
+    assert.strictEqual(evs.length - n, 1, 'expected exactly one record');
+    const d = evs[evs.length - 1].details;
+    assert.ok(
+      !('recommendedStageFrom' in d) && !('recommendedStageTo' in d),
+      `record claims a stage transition that did not happen: ${JSON.stringify(d)}`
+    );
+  });
+
+  await check('several dimensions moving in ONE request produce ONE truthful record', async () => {
+    const ws = await freshWorkspace('multidim');
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: false, config: { a: 1 } });
+    const before = await state(ws);
+    const rowBefore = persistedRow(ws);
+    const n = permissionEvents(ws).length;
+
+    const r = await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, {
+      enabled: true,
+      config: { a: 2 },
+      recommendedStage: 'scale',
+      permissions: { [A1]: true },
+      expectedRevision: before.rev,
+    });
+    assert.ok(r.status >= 200 && r.status < 300, `refused: ${r.status} ${JSON.stringify(r.body)}`);
+    const after = await state(ws);
+
+    const evs = permissionEvents(ws);
+    assert.strictEqual(evs.length - n, 1, 'four dimensions moving together is still one accepted change');
+    const d = evs[evs.length - 1].details;
+    assert.strictEqual(d.enabled, true, 'record misstates enabled');
+    assert.strictEqual(d.recommendedStageFrom, rowBefore.recommendedStage, 'record misstates the stage it moved FROM');
+    assert.strictEqual(d.recommendedStageTo, 'scale', 'record misstates the stage it moved TO');
+    assertReconstructs(evs[evs.length - 1], before, after, 'multi-dimension');
+    assert.deepStrictEqual(d.permissionsGranted, [A1], 'the permission delta must stay truthful alongside the rest');
+  });
+
+  await check('a rejected write moves no dimension and emits nothing, even when it names them all', async () => {
+    // The rejection cases above send only permissions. This one sends every
+    // dimension at once with a stale revision: the whole write must be refused
+    // as a unit, leaving no partial state change and no record.
+    const ws = await freshWorkspace('rejectall');
+    await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, { enabled: true, config: { a: 1 } });
+    const s = await state(ws);
+    await write(ws, { [A1]: true }, s.rev);            // advance the revision
+    const rowBefore = persistedRow(ws);
+    const n = permissionEvents(ws).length;
+
+    const r = await api('PUT', `/api/workspaces/${ws}/agents/${AGENT}`, {
+      enabled: false, config: { a: 99 }, recommendedStage: 'growth',
+      permissions: { [A2]: true }, expectedRevision: 0,   // stale
+    });
+    assert.strictEqual(r.status, 409, `expected a 409 conflict, got ${r.status}`);
+    assert.deepStrictEqual(
+      persistedRow(ws), rowBefore,
+      'a refused write changed persisted state — the refusal was not atomic'
+    );
+    assert.strictEqual(permissionEvents(ws).length - n, 0, 'a refused write must emit nothing');
   });
 
   stopServer();

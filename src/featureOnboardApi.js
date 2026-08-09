@@ -24,6 +24,7 @@ const { CATALOG, STAGE_RECOMMENDATIONS, recommendationsForStage } = require('./a
 const { CAPABILITIES, RUNTIME_ENFORCEMENT_SUMMARY, resolveEffectivePermissions, diffPermissions } = require('./permissions');
 const { workspaceProgress } = require('./progress');
 const { AppError, Codes } = require('./errors');
+const { isDeepStrictEqual } = require('node:util');
 
 // Aggregate every milestone across every goal in a workspace into one
 // deterministic progress number (see progress.workspaceProgress). Null when
@@ -276,27 +277,71 @@ function registerFeatureOnboardRoutes(app, { eventLog, actorFromRequest, sendErr
       const delta = diffPermissions(before ? before.permissions : null, row.permissions);
       const beforeRevision = before ? (before.revision || 0) : 0;
       const enabledChanged = !before || before.enabled !== row.enabled;
-      const configChanged = JSON.stringify(before ? before.config : {}) !== JSON.stringify(row.config);
+      // Key order is not state. `config` is a free-form bag with no consumer
+      // anywhere in src/ or public/ — nothing reads it, so nothing can observe
+      // the order its keys happen to serialise in, and a JSON object is an
+      // unordered collection by specification. Measured with the old
+      // JSON.stringify comparison: storing {a:1,b:2} and then submitting
+      // {b:2,a:1} emitted workspace_agent.updated, asserting a configuration
+      // change that had not semantically occurred.
+      //
+      // isDeepStrictEqual is the right instrument rather than a hand-written
+      // walk or a new dependency: it is order-INSENSITIVE for object keys and
+      // order-SENSITIVE for arrays, which is exactly the distinction wanted —
+      // [1,2] -> [2,1] IS a change. Verified for both, nested included.
+      const configChanged = !isDeepStrictEqual(before ? before.config : {}, row.config);
+      // recommendedStage is the fourth independently mutable dimension of this
+      // row, and the one the first version of this route forgot. upsert()
+      // accepts and persists it, so a stage-only write changed stored state and
+      // emitted NOTHING — measured: null -> "growth", HTTP 200, zero events.
+      // Since the pre-#11 route audited every successful upsert unconditionally,
+      // that was a regression this PR introduced, not a pre-existing gap.
+      const stageBefore = before ? (before.recommendedStage !== undefined ? before.recommendedStage : null) : null;
+      const stageChanged = stageBefore !== row.recommendedStage;
 
       // Emit iff something actually changed. An event in this trail means an
       // accepted change occurred; a request that changed nothing is not one.
-      if (delta.changed || enabledChanged || configChanged) {
+      //
+      // The four conditions are the COMPLETE set of semantic state this
+      // endpoint can move, derived from upsert()'s parameter list rather than
+      // assumed: enabled, permissions, config, recommendedStage. The remaining
+      // request field, expectedRevision, is concurrency control that is never
+      // persisted; the remaining row fields are identity (workspaceId,
+      // agentId), immutable (createdAt), derived from the permission delta
+      // (revision, already reported below), or write metadata (updatedAt).
+      // updatedAt deliberately does NOT appear here: it moves on every accepted
+      // write including a pure no-op, so keying emission on it would restore
+      // exactly the fabricated no-op event this PR removed.
+      if (delta.changed || enabledChanged || configChanged || stageChanged) {
+        const details = {
+          enabled: row.enabled,
+          // Direction is explicit: granted is false -> true, revoked is
+          // true -> false. Sorted, so one transition always serialises the
+          // same way and consumers diff semantics rather than key order.
+          permissionsGranted: delta.granted,
+          permissionsRevoked: delta.revoked,
+          // The revision transition the delta belongs to, so a reader can
+          // place this record in the row's history without guessing.
+          permissionRevisionFrom: beforeRevision,
+          permissionRevisionTo: row.revision,
+        };
+        // Present only when it moved, and then as both sides — an event that
+        // merely EXISTS for a stage change would satisfy "not invisible" while
+        // still failing the invariant this PR is about, which is that a real
+        // transition must be reconstructible from the record alone. The
+        // permission arrays are always present because permissions are this
+        // endpoint's primary audited subject and an empty array is itself the
+        // meaningful statement "no authority moved"; a stage field would have
+        // no such reading, so absence is the clearer encoding of "unchanged".
+        if (stageChanged) {
+          details.recommendedStageFrom = stageBefore;
+          details.recommendedStageTo = row.recommendedStage;
+        }
         audit(req, {
           action: 'workspace_agent.updated',
           entityType: 'workspace_agent',
           entityId: `${wsId}:${agentId}`,
-          details: {
-            enabled: row.enabled,
-            // Direction is explicit: granted is false -> true, revoked is
-            // true -> false. Sorted, so one transition always serialises the
-            // same way and consumers diff semantics rather than key order.
-            permissionsGranted: delta.granted,
-            permissionsRevoked: delta.revoked,
-            // The revision transition the delta belongs to, so a reader can
-            // place this record in the row's history without guessing.
-            permissionRevisionFrom: beforeRevision,
-            permissionRevisionTo: row.revision,
-          },
+          details,
         });
       }
       res.json(row);
