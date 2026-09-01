@@ -20,6 +20,88 @@ const { defaultPermissionsFor, resolveEffectivePermissions, applyPermissionPatch
 const DATA_DIR = process.env.RUCKER_DATA_DIR || path.join(__dirname, '..', 'data');
 const SCHEMA_VERSION = 1;
 
+// THE WRITE CONTRACT — machine-readable, and the single source of truth for
+// what a settings write may touch and how each field must be treated.
+//
+// WHY THIS EXISTS AS DATA RATHER THAN A COMMENT. Three separate defects in this
+// PR were the same defect: a dimension this write persists was missing from the
+// audit path. recommendedStage was invisible, then config was detected but not
+// described, then enabled recorded a result rather than a transition. Each was
+// fixed individually while the COMPLETENESS of the dimension set stayed a claim
+// in prose, manually duplicated in two files. Measured: adding a fifth
+// persisted field to upsert() left all 101 unit and 103 integration cases green
+// while a real accepted transition was persisted with zero audit records.
+//
+// So the set is declared once, here, and the audit path is checked against it
+// mechanically. Classifications:
+//
+//   semantic        persisted state a caller can change; a change is an
+//                   accepted state transition and MUST be covered by the
+//                   workspace_agent.updated audit contract
+//   control         accepted from the caller, never persisted (concurrency)
+//   identity        persisted, fixed by the row's address
+//   immutable       persisted, set once at creation
+//   write_metadata  persisted, moves on every accepted write — deliberately NOT
+//                   a transition, since keying audit emission on it would make
+//                   every no-op emit an event
+//   derived         persisted, computed from a semantic dimension and already
+//                   reported through that dimension's evidence
+const WRITE_CONTRACT = Object.freeze({
+  permissions: 'semantic',
+  enabled: 'semantic',
+  config: 'semantic',
+  recommendedStage: 'semantic',
+  expectedRevision: 'control',
+  workspaceId: 'identity',
+  agentId: 'identity',
+  createdAt: 'immutable',
+  updatedAt: 'write_metadata',
+  revision: 'derived',
+});
+const SEMANTIC_DIMENSIONS = Object.freeze(
+  Object.keys(WRITE_CONTRACT).filter((k) => WRITE_CONTRACT[k] === 'semantic').sort()
+);
+const PERSISTED_FIELDS = Object.freeze(
+  Object.keys(WRITE_CONTRACT).filter((k) => WRITE_CONTRACT[k] !== 'control').sort()
+);
+
+// The fail-closed half that lives on the write side: a row may not carry a
+// field nobody has classified. Adding a field to the row literal without adding
+// it to WRITE_CONTRACT throws here, BEFORE anything is persisted, so unclassified
+// state cannot reach disk. Classifying it as `semantic` then trips the audit
+// coverage check at route registration. A developer therefore has to make a
+// deliberate, reviewable classification before new state can be accepted.
+//
+// Throws a plain Error, not an AppError: this is a broken internal contract, not
+// a caller mistake, and it should surface as a 500 rather than be mistaken for
+// a validation failure the operator could fix by changing their request.
+function assertRowMatchesContract(row) {
+  const keys = Object.keys(row);
+  const unclassified = keys.filter((k) => !Object.prototype.hasOwnProperty.call(WRITE_CONTRACT, k)).sort();
+  if (unclassified.length > 0) {
+    throw new Error(
+      `workspace agent settings row carries unclassified field(s): ${unclassified.join(', ')}. ` +
+      'Add each to WRITE_CONTRACT in workspaceAgentSettingsStore.js with its classification. ' +
+      'If it is persisted state a caller can change, it is `semantic` and the audit contract in ' +
+      'featureOnboardApi.js must cover it too — that is checked at route registration.'
+    );
+  }
+  const controlLeak = keys.filter((k) => WRITE_CONTRACT[k] === 'control').sort();
+  if (controlLeak.length > 0) {
+    throw new Error(
+      `workspace agent settings row persists control-only field(s): ${controlLeak.join(', ')}. ` +
+      'Control inputs are concurrency metadata and must never become stored state.'
+    );
+  }
+  const missing = PERSISTED_FIELDS.filter((k) => !keys.includes(k));
+  if (missing.length > 0) {
+    throw new Error(
+      `workspace agent settings row is missing declared field(s): ${missing.join(', ')}. ` +
+      'Remove them from WRITE_CONTRACT if they are genuinely gone.'
+    );
+  }
+}
+
 let versionedStore = null;
 let registeredOnEvent = null;
 function getStore() {
@@ -209,6 +291,10 @@ function upsert(workspaceId, agentId, { enabled, permissions, config, recommende
     revision: permissionsChanged ? currentRevision + 1 : currentRevision,
   };
 
+  // Fail closed before persistence, never after: a row that reaches disk
+  // unclassified would already be the unaudited transition this prevents.
+  assertRowMatchesContract(row);
+
   if (idx === -1) records.push(row); else records[idx] = row;
   writeAll(records);
   return row;
@@ -218,4 +304,7 @@ function recover(resolution) {
   return getStore().recover(resolution);
 }
 
-module.exports = { init, listForWorkspace, getForWorkspace, upsert, recover };
+module.exports = {
+  init, listForWorkspace, getForWorkspace, upsert, recover,
+  WRITE_CONTRACT, SEMANTIC_DIMENSIONS, PERSISTED_FIELDS, assertRowMatchesContract,
+};
