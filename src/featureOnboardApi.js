@@ -54,7 +54,59 @@ function decorateWorkspaces(workspaces) {
   return workspaces.map((ws) => ({ ...ws, progress: progressFromGoals(goalsByWorkspace[ws.id]) }));
 }
 
+// THE AUDIT SIDE OF THE WRITE CONTRACT.
+//
+// One declaration, not two. These keys ARE the set of dimensions this route
+// claims to audit — there is no separate hand-maintained list to drift from,
+// and assertAuditCoversWriteContract below checks this map against the store's
+// declared semantic dimensions by SET EQUALITY in both directions.
+//
+// Each detector answers one question about the ACCEPTED TRANSITION: did this
+// dimension move between the persisted before and the persisted after? The
+// emission guard is derived from these, so a dimension cannot be dropped from
+// the condition while still appearing in the map.
+const CHANGE_DETECTORS = Object.freeze({
+  permissions: (c) => c.delta.changed,
+  enabled: (c) => c.enabledChanged,
+  config: (c) => c.configChanged,
+  recommendedStage: (c) => c.stageChanged,
+});
+
+// Fail closed at ROUTE REGISTRATION — the server refuses to boot rather than
+// serving writes whose audit coverage is incomplete. Checked in both
+// directions: an uncovered dimension is the defect that produced three separate
+// findings in this PR; a phantom detector means the route believes it audits
+// something the store no longer persists, which would make the completeness
+// claim false in the other direction.
+function assertAuditCoversWriteContract(audited, semantic) {
+  const a = [...audited].sort();
+  const s = [...semantic].sort();
+  const uncovered = s.filter((k) => !a.includes(k));
+  const phantom = a.filter((k) => !s.includes(k));
+  if (uncovered.length > 0 || phantom.length > 0) {
+    const parts = [];
+    if (uncovered.length > 0) {
+      parts.push(
+        'the settings write can persist semantic dimension(s) the audit contract does not cover: ' +
+        `${uncovered.join(', ')} — a change to those would be an accepted state transition with no ` +
+        'audit record. Add a detector to CHANGE_DETECTORS and decide what evidence the event carries.'
+      );
+    }
+    if (phantom.length > 0) {
+      parts.push(
+        'the audit contract claims dimension(s) the write contract does not declare semantic: ' +
+        `${phantom.join(', ')} — remove the detector, or fix the classification in WRITE_CONTRACT.`
+      );
+    }
+    throw new Error(`workspace_agent.updated audit contract is incomplete: ${parts.join(' ALSO ')}`);
+  }
+}
+
 function registerFeatureOnboardRoutes(app, { eventLog, actorFromRequest, sendError }) {
+  // Before a single route is mounted. An incomplete audit contract is a boot
+  // failure, not a runtime surprise on whichever write happens to hit it first.
+  assertAuditCoversWriteContract(Object.keys(CHANGE_DETECTORS), agentSettings.SEMANTIC_DIMENSIONS);
+
   const audit = (req, event) => eventLog.record({ actor: actorFromRequest(req), ...event });
 
   // Resolve and validate :workspaceId. Throws 404 for an unknown workspace,
@@ -371,7 +423,13 @@ function registerFeatureOnboardRoutes(app, { eventLog, actorFromRequest, sendErr
       // updatedAt deliberately does NOT appear here: it moves on every accepted
       // write including a pure no-op, so keying emission on it would restore
       // exactly the fabricated no-op event this PR removed.
-      if (delta.changed || enabledChanged || configChanged || stageChanged) {
+      // Derived from the detector map, not re-enumerated here. Adding a dimension
+      // to CHANGE_DETECTORS automatically extends this condition.
+      const ctx = { delta, enabledChanged, configChanged, stageChanged };
+      const changed = Object.fromEntries(
+        Object.entries(CHANGE_DETECTORS).map(([dim, detect]) => [dim, Boolean(detect(ctx))])
+      );
+      if (Object.values(changed).some(Boolean)) {
         const details = {
           enabled: row.enabled,
           // Direction is explicit: granted is false -> true, revoked is
@@ -453,4 +511,7 @@ const STORES = { workspacesStore, records, founderProfile, onboarding, yc, agent
 
 // computeWorkspaceProgress was exported here but had no caller anywhere in
 // src/, test/ or public/ — a dead export, removed rather than renamed.
-module.exports = { registerFeatureOnboardRoutes, STORES };
+module.exports = {
+  registerFeatureOnboardRoutes, STORES,
+  CHANGE_DETECTORS, assertAuditCoversWriteContract,
+};
